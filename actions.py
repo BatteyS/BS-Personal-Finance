@@ -159,6 +159,12 @@ def preview_layout(path: Path, fields: dict, header: list[str], limit: int = 6) 
     return load.parse_layout(rows, index, layout_from(fields, header, "(preview)"))[:limit]
 
 
+def your_accounts() -> dict[str, dict]:
+    """The accounts that are the user's own: none while the page runs on the example accounts,
+    whose Fidelity, BofA and Amex accounts belong to nobody."""
+    return {} if config.ACCOUNTS_SOURCE == config.ACCOUNTS_EXAMPLE else dict(config.ACCOUNTS)
+
+
 def account_key(name: str) -> str:
     """A key for a new account, from its name and not one already taken: "Chase Freedom" becomes
     chase_freedom, or chase_freedom_2."""
@@ -171,15 +177,16 @@ def account_key(name: str) -> str:
 
 def replace_checked(path: Path, text: str, check) -> None:
     """Write text to path through a trial file that `check` must read without an error first, so a
-    bad addition never replaces a good file. The trial is removed either way."""
+    bad addition never replaces a good file. The trial is removed either way, and an error names
+    the real file, not the trial."""
     path.parent.mkdir(parents=True, exist_ok=True)
     trial = path.with_name(path.name + ".new")
     trial.write_text(text, encoding="utf-8")
     try:
         check(trial)
-    except Exception:
+    except Exception as error:
         trial.unlink()
-        raise
+        raise type(error)(str(error).replace(trial.name, path.name)) from None
     trial.replace(path)
 
 
@@ -189,6 +196,9 @@ def add_account(name: str, kind: str, institution: str, paid_from: str | None = 
     are reloaded in place."""
     if kind not in KINDS:
         raise config.AccountsError(f"kind must be one of {', '.join(KINDS)}")
+    if paid_from and paid_from not in your_accounts():
+        raise config.AccountsError(f"{paid_from} isn't one of your accounts, so it can't pay this card. "
+                                   "Choose another, or None of these and add it later.")
     key = account_key(name)
     if config.ACCOUNTS_PATH.exists():
         text = config.ACCOUNTS_PATH.read_text(encoding="utf-8").rstrip("\n") + "\n\n[[account]]\n"

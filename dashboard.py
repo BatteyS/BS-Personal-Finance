@@ -126,10 +126,11 @@ def update_panel() -> None:
 def account_picker(prefix: str, institution: str) -> dict | None:
     """Pick one of your accounts for a file, or describe a new one. Returns {"key": ...} for an
     existing account, the new account's fields, or None while a new one is missing its name."""
-    keys = list(config.ACCOUNTS)
+    yours = actions.your_accounts()  # never the example accounts: they aren't the user's
+    keys = list(yours)
     choice = st.selectbox("Which account is this file for?", [*keys, "new"], key=f"{prefix}_account",
                           index=len(keys), format_func=lambda key: "A new account…" if key == "new"
-                          else config.ACCOUNTS[key]["name"])
+                          else yours[key]["name"])
     if choice != "new":
         return {"key": choice}
     name, kind = st.columns(2)
@@ -138,9 +139,11 @@ def account_picker(prefix: str, institution: str) -> dict | None:
     bank = st.text_input("Institution, as one short word", value=institution, key=f"{prefix}_institution")
     paid_from, hint = None, ""
     if kind_key == "credit":
-        payers = [key for key, spec in config.ACCOUNTS.items() if spec["kind"] == "cash"]
+        payers = [key for key, spec in yours.items() if spec["kind"] == "cash"]
         paid_from = st.selectbox("Which account pays this card?", [None, *payers], key=f"{prefix}_payer",
-                                 format_func=lambda key: "None of these" if key is None else config.ACCOUNTS[key]["name"])
+                                 format_func=lambda key: "None of these" if key is None else yours[key]["name"],
+                                 help="If it's one you haven't added yet, choose None of these: the card's payments "
+                                      "show as uncategorized until that account is taught too.")
         if paid_from:
             hint = st.text_input("How the payment reads on that account (optional, helps match it)",
                                  key=f"{prefix}_hint", placeholder="CHASE CREDIT CRD")

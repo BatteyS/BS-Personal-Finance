@@ -175,3 +175,51 @@ def test_a_chase_style_checking_export_is_guessed_right(tmp_path):
     assert info["suggest"]["description"] == ["description"] and info["suggest"]["date"] == "posting date"
     preview = actions.preview_layout(path, {"name": "Chase checking", **info["suggest"]}, info["header"])
     assert [(row["amount"], row["description"].split()[0]) for row in preview] == [(-12.5, "CORNER"), (1500.0, "ACME")]
+
+
+@pytest.fixture
+def first_run(tmp_path, monkeypatch):
+    """A fresh install: no accounts.toml, so the page runs on the example accounts."""
+    (tmp_path / "accounts.toml").unlink()
+    example = config.read_accounts(config.ACCOUNTS_EXAMPLE)
+    monkeypatch.setattr(config, "ACCOUNTS_SOURCE", config.ACCOUNTS_EXAMPLE)
+    monkeypatch.setattr(config, "ACCOUNTS", example["accounts"])
+    monkeypatch.setattr(config, "TRANSFER_PAIRS", example["transfer_pairs"])
+
+
+def test_on_a_first_run_none_of_the_example_accounts_are_yours(first_run):
+    assert "bofa_checking" in config.ACCOUNTS  # the page runs on the examples...
+    assert actions.your_accounts() == {}  # ...but none of them are offered as yours
+
+
+def test_a_card_cannot_be_paid_from_an_account_that_is_not_yours(first_run, tmp_path):
+    with pytest.raises(config.AccountsError, match="isn't one of your accounts"):
+        actions.add_account("Rewards Card", "credit", "chase", paid_from="bofa_checking")
+    assert not (tmp_path / "accounts.toml").exists()
+
+
+def test_errors_name_the_real_file_not_the_trial(tmp_path):
+    def check(path):
+        raise config.AccountsError(f"{path.name}, transfer 1: something's wrong")
+    with pytest.raises(config.AccountsError) as caught:
+        actions.replace_checked(tmp_path / "accounts.toml", "text", check)
+    assert str(caught.value) == "accounts.toml, transfer 1: something's wrong"
+
+
+def test_the_page_teaches_a_first_card_with_nothing_set_up(first_run, tmp_path):
+    from streamlit.testing.v1 import AppTest
+
+    path = write(tmp_path, "20261106-145847_Chase0000_Activity20261106.CSV", CARD)
+    [unknown] = actions.import_files([path])
+    prefix = f"csv_{unknown['file']}"
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "dashboard.py"), default_timeout=60)
+    page.session_state["import_results"] = [unknown]
+    page.run()
+    assert not page.exception
+    assert page.selectbox(key=f"{prefix}_account").options == ["A new account…"]  # no example accounts
+    page.text_input(key=f"{prefix}_name").set_value("Rewards Card").run()
+    assert page.selectbox(key=f"{prefix}_payer").options == ["None of these"]  # nothing of yours pays it yet
+    page.button(key=f"{prefix}_save").click().run()
+    assert not page.exception and not page.error
+    assert list(config.ACCOUNTS) == ["rewards_card"]
+    assert len(stored()) == 3
