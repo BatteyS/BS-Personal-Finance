@@ -111,6 +111,8 @@ if [ "${1:-}" = --serve ]; then
   idle=0
   while kill -0 "$pid" 2>/dev/null; do
     sleep 60
+    # A restart's old watcher, from before an update, may have removed this page's record.
+    [ -f "$PIDFILE" ] || echo "$pid $port" >"$PIDFILE"
     if [ "$(connections "$port" "$pid")" -gt 0 ]; then idle=0; else idle=$((idle + 1)); fi
     if [ "$idle" -ge "$IDLE_MINUTES" ]; then
       date "+--- %Y-%m-%d %H:%M:%S no open tabs for $IDLE_MINUTES minutes: stopping" >>"$LOG"
@@ -119,7 +121,8 @@ if [ "${1:-}" = --serve ]; then
     fi
   done
   wait "$pid" 2>/dev/null
-  rm -f "$PIDFILE"
+  # Remove the record only while it's still this page's: a page started since keeps its own.
+  if [ "$(cut -d' ' -f1 "$PIDFILE" 2>/dev/null)" = "$pid" ]; then rm -f "$PIDFILE"; fi
   exit 0
 fi
 

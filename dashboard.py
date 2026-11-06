@@ -6,6 +6,10 @@ See docs/spec.md, Dashboard.
     uv run streamlit run dashboard.py
 """
 
+import os
+import signal
+import subprocess
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +41,12 @@ CATEGORY_COLORS = {
     "hobbies": "#5b7a1e", "uncategorized": NEUTRAL,
 }
 CHART_CONFIG = {"displayModeBar": False}
+ROOT = Path(__file__).resolve().parent
+AGENT = "io.github.batteys.bs-personal-finance.page"  # phone access's LaunchAgent (phone.py)
+# The modules this page imports. After an update, a page that wasn't restarted still holds the old
+# ones, while this file is read fresh on every click: see stale_code.
+OWN_MODULES = {"actions", "budget", "categorize", "config", "db", "formats", "load", "ofx", "phone", "queries",
+               "updates"}
 RULE_CATEGORIES = [name for name in config.SPENDING_CATEGORIES if name != "uncategorized"] + config.OTHER_CATEGORIES
 
 st.set_page_config(page_title="Finance", page_icon="💵", layout="wide")
@@ -110,7 +120,8 @@ def newer_version() -> dict | None:
 
 
 def update_panel() -> None:
-    """The sidebar's foot: this copy's version, and an Update button when a newer one is out."""
+    """The sidebar's foot: this copy's version, and an Update button when a newer one is out. An
+    update restarts the page, so it runs the new code."""
     current = updates.version()
     found = newer_version()
     if found and found["behind"]:
@@ -118,9 +129,77 @@ def update_panel() -> None:
         if st.button("Update"):
             changed, message = updates.update()
             newer_version.clear()
-            (st.success if changed else st.warning)(message)
+            if changed:
+                restarted(message.split(". Restart")[0] + ".")
+            else:
+                st.warning(message)
     if current:
         st.caption(f"Personal Finance {current}")
+
+
+# ---------------------------------------------------------------- restarting the page
+# Kept here, with only the standard library, so it works even when every other module in memory is
+# from before an update.
+
+def how_started() -> str:
+    """How this page was started: "phone" (phone access's LaunchAgent keeps it up), "launcher" (the
+    Desktop app or launch.sh), or "terminal" (streamlit run, by hand)."""
+    try:
+        if subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{AGENT}"], capture_output=True).returncode == 0:
+            return "phone"
+    except OSError:  # no launchctl: not a Mac
+        pass
+    return "launcher" if (ROOT / ".page.pid").exists() else "terminal"
+
+
+def restart_page() -> str:
+    """Stop this page so it starts again on the new code, and say how it comes back. Under the
+    launcher, a fresh launcher starts it after the old one's watcher is stopped; under phone access,
+    launchd starts it again; from a terminal it can't come back by itself, so it isn't stopped."""
+    how = how_started()
+    if how == "terminal":
+        return how
+    if how == "launcher":
+        try:
+            page = (ROOT / ".page.pid").read_text().split()[0]
+            watcher = subprocess.run(["ps", "-o", "ppid=", "-p", page], capture_output=True, text=True).stdout.strip()
+            command = subprocess.run(["ps", "-o", "command=", "-p", watcher], capture_output=True, text=True).stdout
+            if "launch.sh --serve" in command:
+                os.kill(int(watcher), signal.SIGTERM)  # the old watcher would otherwise outlive its page
+            os.kill(int(page), signal.SIGTERM)
+        except (OSError, ValueError, IndexError):
+            pass
+        (ROOT / ".page.pid").unlink(missing_ok=True)
+        subprocess.Popen(["/bin/sh", "-c", f"sleep 2; PF_NO_BROWSER=1 exec /bin/sh '{ROOT}/launch.sh'"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()  # after this answer is sent
+    return how
+
+
+def restarted(done: str) -> None:
+    """Restart the page after an update, saying what happens next."""
+    how = restart_page()
+    if how == "terminal":
+        st.success(f"{done} Restart the page to use it: press Ctrl+C in its Terminal window, then start it again.")
+    else:
+        st.success(f"{done} The page is restarting; it comes back by itself in a few seconds.")
+
+
+def stale_code(error: Exception) -> bool:
+    """Whether an error is this page reaching for something its modules from before an update lack."""
+    text = str(error)
+    if isinstance(error, AttributeError):
+        return any(f"module '{name}' has no attribute" in text for name in OWN_MODULES)
+    return isinstance(error, ImportError) and any(name in text for name in OWN_MODULES)
+
+
+def show_stale(error: Exception) -> None:
+    """Instead of a crash: this page is running code from before an update, and a Restart button."""
+    st.warning("This page was updated while it was running, and needs a restart to use the new version.")
+    if st.button("Restart", type="primary", key="restart_stale"):
+        restarted("Restarting.")
+    st.caption(f"(What it ran into: {error})")
 
 
 def account_picker(prefix: str, institution: str) -> dict | None:
@@ -575,17 +654,27 @@ def assumptions_page(plan: dict, example: bool) -> None:
     ]), {"label": "Step", "value": "Amount"})
 
 
-import_panel()
-teach_panel()
-this_month, comparison_tab, budget_tab, assumptions_tab = st.tabs(
-    ["This month", "Budget vs actual", "Budget", "Assumptions & taxes"])
-with this_month:
-    month_page()
-plan, example = read_budget()
-if plan:
-    with comparison_tab:
-        comparison_page(plan, example)
-    with budget_tab:
-        budget_page(plan, example)
-    with assumptions_tab:
-        assumptions_page(plan, example)
+def page() -> None:
+    """The sidebar, any file waiting to be taught, and the four tabs."""
+    import_panel()
+    teach_panel()
+    this_month, comparison_tab, budget_tab, assumptions_tab = st.tabs(
+        ["This month", "Budget vs actual", "Budget", "Assumptions & taxes"])
+    with this_month:
+        month_page()
+    plan, example = read_budget()
+    if plan:
+        with comparison_tab:
+            comparison_page(plan, example)
+        with budget_tab:
+            budget_page(plan, example)
+        with assumptions_tab:
+            assumptions_page(plan, example)
+
+
+try:
+    page()
+except (AttributeError, ImportError) as error:
+    if not stale_code(error):
+        raise
+    show_stale(error)

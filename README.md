@@ -70,7 +70,7 @@ cd ~/personal-finance && uv run phone.py disable
 
 ## Updating
 
-The page's sidebar says which version you have, and when a newer one is out, shows an **Update** button; close the page and open it again afterwards. Running the installer again does the same, from Terminal:
+The page's sidebar says which version you have, and when a newer one is out, shows an **Update** button. The page then restarts itself on the new version and comes back in a few seconds (if you started it by hand with `streamlit run`, it says to restart it there). If a page that was running during an update ever reaches for something only the new version has, it says so and offers a **Restart** button. Running the installer again does the same, from Terminal:
 
 ```bash
 cd ~/personal-finance && sh install.sh

@@ -223,3 +223,33 @@ def test_the_page_teaches_a_first_card_with_nothing_set_up(first_run, tmp_path):
     assert not page.exception and not page.error
     assert list(config.ACCOUNTS) == ["rewards_card"]
     assert len(stored()) == 3
+
+
+def test_a_page_running_code_from_before_an_update_asks_for_a_restart(tmp_path, monkeypatch):
+    """After an update, dashboard.py is read fresh but the other modules in memory are the old
+    ones: here, an actions module without your_accounts, as v1.3's was."""
+    from streamlit.testing.v1 import AppTest
+
+    [unknown] = actions.import_files([write(tmp_path, "card.csv", CARD)])
+    monkeypatch.delattr(actions, "your_accounts")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "dashboard.py"), default_timeout=60)
+    page.session_state["import_results"] = [unknown]
+    page.run()
+    assert not page.exception
+    assert any("needs a restart" in warning.value for warning in page.warning)
+    assert page.button(key="restart_stale").label == "Restart"
+
+
+def test_an_unrelated_error_still_shows_as_one(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    [unknown] = actions.import_files([write(tmp_path, "card.csv", CARD)])
+
+    def broken(*_):
+        raise AttributeError("'NoneType' object has no attribute 'split'")
+
+    monkeypatch.setattr(actions, "read_unknown", broken)
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "dashboard.py"), default_timeout=60)
+    page.session_state["import_results"] = [unknown]
+    page.run()
+    assert page.exception and "NoneType" in page.exception[0].message
