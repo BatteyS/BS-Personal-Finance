@@ -11,7 +11,7 @@
 #
 # The page runs with no Terminal window. Streamlit can't tell when its last tab closes, so the
 # launcher watches the page's open connections (each tab holds one) and stops the page once it
-# has had none for ten minutes. It takes the first free port from 8501 up, and a page this copy
+# has had none for twenty minutes. It takes the first free port from 8501 up, and a page this copy
 # already started is opened rather than started twice. What it prints goes to
 # ~/Library/Logs/Personal Finance.log. When it can't start, this exits 1 and says why on stderr,
 # which Personal Finance on the Desktop shows in a dialog.
@@ -20,7 +20,7 @@ cd "$(dirname "$0")" || exit 1
 ROOT=$(pwd -P)
 LOG="$HOME/Library/Logs/Personal Finance.log"
 PIDFILE="$ROOT/.page.pid"   # "<pid> <port>" of the page this copy started; gitignored
-IDLE_MINUTES=${PF_IDLE_MINUTES:-10}
+IDLE_MINUTES=${PF_IDLE_MINUTES:-20}
 FIRST_PORT=${PF_PORT:-8501}
 LAST_PORT=$((FIRST_PORT + 9))
 

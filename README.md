@@ -22,7 +22,7 @@ Open Terminal (in Applications, then Utilities), paste this line, and press Retu
 
 It installs what's missing, all of it into your own home folder: Apple's Command Line Tools (for git), [uv](https://docs.astral.sh/uv/) (which runs Python), your copy in `~/personal-finance` with its packages, and **Personal Finance** on your Desktop. It asks for no password itself (Apple's window for the Command Line Tools may), and when it finishes, the page is open in your browser. It needs macOS 13 (Ventura) or newer, and running it again is safe: what's done is skipped.
 
-From then on, double-click **Personal Finance** on your Desktop whenever you want the page. It opens in your browser with no Terminal window, and stops by itself ten minutes after you close its last tab. From a terminal, `sh launch.sh` does the same, and `sh launch.sh --stop` stops it.
+From then on, double-click **Personal Finance** on your Desktop whenever you want the page. It opens in your browser with no Terminal window, and stops by itself twenty minutes after you close its last tab. From a terminal, `sh launch.sh` does the same, and `sh launch.sh --stop` stops it.
 
 ### On Linux, or by hand
 
@@ -59,7 +59,7 @@ It may print a `login.tailscale.com` link to turn on HTTPS for your tailnet: ope
 Three things to know:
 
 - **The Mac has to be awake.** Keep it plugged in, and turn on **Prevent automatic sleeping on power adapter when the display is off** in System Settings, Battery, Options. After a restart, someone has to log in on the Mac first.
-- **The page stays running** while phone access is on, so the phone always finds it: a LaunchAgent starts it at login and again if it stops. Without phone access, it stops ten minutes after its last tab closes.
+- **The page stays running** while phone access is on, so the phone always finds it: a LaunchAgent starts it at login and again if it stops. Without phone access, it stops twenty minutes after its last tab closes.
 - **Only you can open it.** Tailscale's address only reaches devices on your own tailnet, and the page answers a request from the phone only for the Tailscale account phone access was set up for (`data/phone.json`, which never leaves the Mac).
 
 `uv run phone.py status` says whether it works and what to do if not. To turn it off, which stops the page from running all the time:

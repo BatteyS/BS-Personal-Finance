@@ -308,7 +308,7 @@ ensure_phone
 
 step "Done"
 note "Double-click Personal Finance on your Desktop whenever you want the page. It opens in your"
-note "browser, with no Terminal window, and stops by itself ten minutes after its last tab closes."
+note "browser, with no Terminal window, and stops by itself twenty minutes after its last tab closes."
 if [ ! -f "$DIR/data/accounts.toml" ] || [ ! -f "$DIR/data/budget.toml" ]; then
   note "Until you set it up, it shows example accounts and an example budget: see Set it up in"
   note "$DIR/README.md."

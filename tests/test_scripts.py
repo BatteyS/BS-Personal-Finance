@@ -32,3 +32,7 @@ def test_the_installer_is_for_macos_only(tmp_path):
     stopped = subprocess.run(["sh", str(ROOT / "install.sh"), "--dir", str(tmp_path / "copy"), "--no-open"],
                              capture_output=True, text=True)
     assert stopped.returncode == 1 and "This installer is for macOS" in stopped.stderr
+
+
+def test_the_page_stops_after_twenty_idle_minutes_unless_told_otherwise():
+    assert "IDLE_MINUTES=${PF_IDLE_MINUTES:-20}" in (ROOT / "launch.sh").read_text()
