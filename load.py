@@ -4,8 +4,10 @@
 
 For each file: find the header row by its text, tell the institution from the columns it names,
 parse the rows into the transactions shape, and insert the ones not already stored. One line per
-file says how many rows were read, new and duplicate. See docs/spec.md: Bank exports, Row ids and
-Data model.
+file says how many rows were read, new and duplicate. Fidelity, Bank of America and Amex have
+built-in parsers; any other institution's CSV comes in through a layout taught on the page, and
+OFX/QFX files through the account they name (formats.py, ofx.py). See docs/spec.md: Bank exports,
+Row ids and Data model.
 
 The parsers were written against the layouts documented in the spec, before any samples existed.
 The scrubbed samples are the truth: check each parser against them.
@@ -27,8 +29,10 @@ from pathlib import Path
 
 import config
 import db
+import formats
+import ofx
 
-DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d")
+DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y", "%d-%b-%Y", "%d %b %Y")
 # Amex's plain download has exactly these three columns; with extra details it also has one of
 # the Amex-only columns. BofA's checking export always adds Running Bal., so the two can't be confused.
 AMEX_PLAIN_COLUMNS = {"date", "description", "amount"}
@@ -37,6 +41,17 @@ AMEX_ONLY_COLUMNS = {"card member", "account #", "extended details", "appears on
 
 class LoadError(Exception):
     """A file that can't be loaded as it is. The message says why, and nothing from it is inserted."""
+
+
+class UnknownLayout(LoadError):
+    """A file the tracker hasn't been taught: a CSV whose header matches no layout ("csv"), or an
+    OFX file whose account matches none of yours ("ofx", with the account number's last four
+    digits). The page offers to teach it."""
+
+    def __init__(self, message: str, kind: str, account_ends: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.account_ends = account_ends
 
 
 def normalize(text: str) -> str:
@@ -74,14 +89,18 @@ def detect_institution(names: set[str]) -> str | None:
     return None
 
 
-def find_header(rows: list[list[str]], text: str) -> tuple[int, str]:
-    """The header row's index and institution. Raises LoadError quoting the file's first three lines."""
+def find_header(rows: list[list[str]], text: str, layouts: list[dict] | None = None) -> tuple[int, str, dict | None]:
+    """The header row's index, its institution, and the taught layout it matches (None for a
+    built-in one). Raises UnknownLayout quoting the file's first three lines."""
     for index, row in enumerate(rows):
         institution = detect_institution({header_name(cell) for cell in row} - {""})
         if institution:
-            return index, institution
+            return index, institution, None
+        layout = formats.match_layout(row, layouts or [])
+        if layout:
+            return index, layout["name"], layout
     first_lines = "\n".join(f"    {line}" for line in text.splitlines()[:3]) or "    (the file is empty)"
-    raise LoadError(f"no Fidelity, Bank of America or Amex header found; the file starts:\n{first_lines}")
+    raise UnknownLayout(f"its layout isn't one this tracker knows yet; the file starts:\n{first_lines}", "csv")
 
 
 def column_positions(header: list[str]) -> dict[str, int]:
@@ -207,6 +226,47 @@ def parse_fidelity(rows: list[list[str]], header_index: int) -> list[dict]:
 PARSERS = {"fidelity": parse_fidelity, "bofa": parse_bofa, "amex": parse_amex}
 
 
+def parse_layout(rows: list[list[str]], header_index: int, layout: dict) -> list[dict]:
+    """A CSV in a taught layout. One amount column is flipped when spending shows as positive;
+    debit and credit columns become credit minus debit."""
+    columns = {formats.header_key(name): index for index, name in reversed(list(enumerate(rows[header_index])))}
+    parsed = []
+    for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        date_text = cell(row, columns[layout["date"]])
+        if parse_date(date_text) is None:
+            continue
+        if layout["amount"]:
+            amount = parse_amount(cell(row, columns[layout["amount"]]), number)
+            if amount is not None and layout["spending_is"] == "positive":
+                amount = -amount
+        else:
+            debit = parse_amount(cell(row, columns[layout["debit"]]), number)
+            credit = parse_amount(cell(row, columns[layout["credit"]]), number)
+            amount = None if debit is None and credit is None else round((credit or 0) - abs(debit or 0), 2)
+        if amount is None:
+            continue
+        description = " ".join(cell(row, columns[name]).strip() for name in layout["description"]).strip()
+        parsed.append(transaction(layout["account"], date_text, amount + 0.0, description))
+    return parsed
+
+
+def parse_ofx(text: str, matches: list[dict]) -> list[dict]:
+    """An OFX/QFX file: each statement's transactions, on the account its number ends like."""
+    found = ofx.statements(text)
+    if not found:
+        raise LoadError("it looks like OFX but holds no statement")
+    parsed = []
+    for statement in found:
+        account = formats.ofx_account(statement["account_number"], matches)
+        if account is None:
+            ends = "".join(c for c in statement["account_number"] if c.isdigit())[-4:]
+            raise UnknownLayout(f"its {statement['kind']} account ending {ends or '(no number)'} isn't one of yours yet",
+                                "ofx", ends)
+        parsed += [{"account": account, "date": row["date"], "month": row["date"][:7], "amount": row["amount"],
+                    "description": row["description"]} for row in statement["transactions"]]
+    return parsed
+
+
 def row_ids(transactions: list[dict]) -> list[str]:
     """Each row's id: the SHA-256 of account|date|amount|description|occurrence, where occurrence
     counts identical rows within the file, so two identical charges on one day are both kept."""
@@ -233,18 +293,26 @@ def insert_new(connection: sqlite3.Connection, transactions: list[dict], ids: li
     return connection.total_changes - before
 
 
-def load_file(path: Path, connection: sqlite3.Connection, imported_at: str) -> dict:
-    """Load one export and record it in imports; return that imports row.
+def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, known: dict | None = None) -> dict:
+    """Load one export and record it in imports; return that imports row. `known` is what
+    formats.read_formats returns; it's read here when not given.
 
     Raises LoadError, in which case nothing from the file is inserted.
     """
+    known = known if known is not None else formats.read_formats()
     try:
         text = read_text(path)
-        rows = list(csv.reader(io.StringIO(text, newline="")))
-    except (OSError, csv.Error) as error:
-        raise LoadError(f"can't read it as CSV: {error}") from None
-    header_index, institution = find_header(rows, text)
-    transactions = PARSERS[institution](rows, header_index)
+    except OSError as error:
+        raise LoadError(f"can't read it: {error}") from None
+    if ofx.is_ofx(text):
+        institution, transactions = "ofx", parse_ofx(text, known["ofx"])
+    else:
+        try:
+            rows = list(csv.reader(io.StringIO(text, newline="")))
+        except csv.Error as error:
+            raise LoadError(f"can't read it as CSV: {error}") from None
+        header_index, institution, layout = find_header(rows, text, known["csv"])
+        transactions = parse_layout(rows, header_index, layout) if layout else PARSERS[institution](rows, header_index)
     ids = row_ids(transactions)
     with connection:  # one database transaction per file: all of it or none of it
         new = insert_new(connection, transactions, ids, imported_at)
@@ -271,12 +339,19 @@ def load_files(paths: list[Path], db_path: Path | None = None) -> list[dict]:
     that was rejected.
     """
     imported_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        known = formats.read_formats()
+    except formats.FormatsError as error:
+        return [{"file": path.name, "error": f"formats.toml: {error}"} for path in paths]
     connection = db.connect(db_path)
     results: list[dict] = []
     try:
         for path in paths:
             try:
-                results.append(load_file(path, connection, imported_at))
+                results.append(load_file(path, connection, imported_at, known))
+            except UnknownLayout as error:
+                results.append({"file": path.name, "error": str(error), "unknown": error.kind,
+                                "account_ends": error.account_ends, "path": str(path)})
             except LoadError as error:
                 results.append({"file": path.name, "error": str(error)})
     finally:

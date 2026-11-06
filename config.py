@@ -6,6 +6,7 @@ accounts.example.toml until that exists, so this file holds nothing personal. Se
 """
 
 import os
+import re
 import tomllib
 from pathlib import Path
 
@@ -17,6 +18,7 @@ EXPORTS_DIR = DATA_DIR / "exports"  # every uploaded file, kept
 BUDGET_PATH = DATA_DIR / "budget.toml"  # copied from budget.example.toml and filled in by hand
 ACCOUNTS_PATH = DATA_DIR / "accounts.toml"  # copied from accounts.example.toml and made your own
 ACCOUNTS_EXAMPLE = Path(__file__).resolve().parent / "accounts.example.toml"
+FORMATS_PATH = DATA_DIR / "formats.toml"  # layouts taught on the page, for institutions with no built-in parser
 
 # IRS caps by year. Add next year's row when the IRS announces it
 # (401(k) and IRA in October or November, HSA in May).
@@ -28,7 +30,10 @@ CAPS = {
 # Caps that count employer money. The 401(k) deferral cap doesn't; the HSA cap does.
 CAPS_INCLUDE_EMPLOYER = {"hsa"}
 
-INSTITUTIONS = {"fidelity", "bofa", "amex"}
+# Institutions whose exports have a built-in parser (load.py). Any other short name, like "chase",
+# is an institution whose files come in through a layout taught on the page or as OFX (formats.py).
+BUILT_IN_INSTITUTIONS = {"fidelity", "bofa", "amex"}
+INSTITUTION_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 KINDS = {"cash", "brokerage", "retirement", "hsa", "credit"}
 CAP_KEYS = {"401k", "roth", "hsa"}
 
@@ -52,8 +57,8 @@ def read_accounts(path: Path) -> dict:
         where = f"{path.name}, account {number} ({key or 'no key'})"
         if not key or key in accounts:
             raise AccountsError(f"{where}: each [[account]] needs a key of its own")
-        if entry.get("institution") not in INSTITUTIONS:
-            raise AccountsError(f"{where}: institution must be one of {', '.join(sorted(INSTITUTIONS))}")
+        if not INSTITUTION_NAME.match(str(entry.get("institution", ""))):
+            raise AccountsError(f"{where}: institution must be a short lowercase name, like fidelity, bofa, amex or chase")
         if entry.get("kind") not in KINDS:
             raise AccountsError(f"{where}: kind must be one of {', '.join(sorted(KINDS))}")
         if entry.get("cap") not in (None, *CAP_KEYS):
@@ -94,6 +99,21 @@ TRANSFER_PAIRS = _settings["transfer_pairs"]
 PLANNED_CAPS = _settings["planned_caps"]
 # Contributions per year for each cap, for the pace slack: 26 biweekly, 24 twice a month, 12 monthly.
 CONTRIBUTIONS_PER_YEAR = _settings["contributions_per_year"]
+
+
+def reload_accounts() -> None:
+    """Read the accounts file again, after the page added an account to it. The settings above are
+    updated in place, so every module that reads them sees the change without a restart."""
+    global ACCOUNTS_SOURCE
+    ACCOUNTS_SOURCE = ACCOUNTS_PATH if ACCOUNTS_PATH.exists() else ACCOUNTS_EXAMPLE
+    settings = read_accounts(ACCOUNTS_SOURCE)
+    ACCOUNTS.clear()
+    ACCOUNTS.update(settings["accounts"])
+    TRANSFER_PAIRS[:] = settings["transfer_pairs"]
+    PLANNED_CAPS.clear()
+    PLANNED_CAPS.update(settings["planned_caps"])
+    CONTRIBUTIONS_PER_YEAR.clear()
+    CONTRIBUTIONS_PER_YEAR.update(settings["contributions_per_year"])
 TRANSFER_WINDOW_DAYS = 5
 
 # Pass 1 of categorization: rows on investment accounts and every Fidelity account, matched against

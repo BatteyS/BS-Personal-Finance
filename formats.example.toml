@@ -1,0 +1,29 @@
+# Layouts for banks with no built-in parser, and OFX/QFX account matches. The page writes these
+# for you when it meets a file it doesn't know; this file shows their shape. Your own copy is
+# data/formats.toml, which stays out of git. See formats.py for every field.
+
+# A CSV with one signed amount column. Its header row must have exactly these columns, in any
+# order and any case.
+[[csv]]
+name = "Example card"
+headers = ["Transaction Date", "Post Date", "Description", "Category", "Type", "Amount", "Memo"]
+account = "example_card"               # a key in accounts.toml
+date = "Transaction Date"
+amount = "Amount"
+spending_is = "negative"               # or "positive", when charges show as positive numbers
+description = ["Description"]
+
+# A CSV with money out and money in in separate columns.
+[[csv]]
+name = "Example checking"
+headers = ["Date", "Description", "Debit", "Credit", "Balance"]
+account = "example_checking"
+date = "Date"
+debit = "Debit"
+credit = "Credit"
+description = ["Description"]
+
+# An OFX/QFX file: which of your accounts its account number belongs to, by the last four digits.
+[[ofx]]
+account_ends = "1234"
+account = "example_checking"

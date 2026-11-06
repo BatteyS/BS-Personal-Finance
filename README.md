@@ -75,6 +75,8 @@ cd ~/personal-finance && uv run phone.py disable
 2. **Import them** from the page's sidebar.
 3. **Read the verdict,** then clear **Uncategorized**: pick each new merchant, check the suggested pattern, choose a category, save. Every save re-sorts all your months.
 
+**Other banks.** Fidelity, Bank of America and Amex are built in. For any other institution, download its CSV, or its OFX/QFX ("Quicken" or "Money") file if it offers one, and describe it once in `data/formats.toml`, following `formats.example.toml`: which columns hold the date, amount and description for a CSV, or the last four digits of the account number for OFX. Add the account itself to `data/accounts.toml` first.
+
 Moves between your own accounts (a card payment, cash to brokerage) are matched up and never count as spending. If one shows up under Uncategorized, the transfer pairs in `data/accounts.toml` need a line for it.
 
 ## What's in the data folder
@@ -86,6 +88,7 @@ Moves between your own accounts (a card payment, cash to brokerage) are matched 
 | `accounts.toml` | Your accounts, the transfers between them, your pay schedule |
 | `budget.toml` | Your budget, written by the interview |
 | `rules.csv` | Your category rules |
+| `formats.toml` | The layouts of other banks' files, and which account an OFX file belongs to |
 | `phone.json` | Your Mac's tailnet address and Tailscale login, once phone access is on |
 
 None of it is tracked by git. Back the folder up some other way, such as Time Machine.

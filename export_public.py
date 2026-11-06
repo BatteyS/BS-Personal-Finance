@@ -42,9 +42,9 @@ ROOT = Path(__file__).resolve().parent
 ENGINE = [
     ".claude/settings.json", ".github/*", ".gitignore", ".python-version", ".streamlit/config.toml",
     "CLAUDE.md", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
-    "accounts.example.toml", "budget.example.toml", "rules.example.csv",
+    "accounts.example.toml", "budget.example.toml", "formats.example.toml", "rules.example.csv",
     "actions.py", "budget.py", "categorize.py", "config.py", "dashboard.py", "db.py", "export_public.py",
-    "load.py", "queries.py", "scrub.py",
+    "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py",
     "install.sh", "launch.sh", "phone.py", "icon.py",
     "tests/*",
 ]

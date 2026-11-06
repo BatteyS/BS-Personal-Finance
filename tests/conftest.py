@@ -26,8 +26,9 @@ def use_accounts(monkeypatch, path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def test_accounts(monkeypatch):
+def test_accounts(monkeypatch, tmp_path):
     use_accounts(monkeypatch, HERE / "accounts.toml")
+    monkeypatch.setattr(config, "FORMATS_PATH", tmp_path / "formats.toml")  # no taught layouts unless a test writes some
 
 
 @pytest.fixture

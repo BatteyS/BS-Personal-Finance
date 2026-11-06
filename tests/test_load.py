@@ -187,7 +187,7 @@ def test_an_unknown_header_is_rejected_with_its_first_three_lines(tmp_path):
     db_path = tmp_path / "finance.db"
     text = "Name,Balance\nREDACTED,1.00\nREDACTED,2.00\nREDACTED,3.00\n"
     [result] = load.load_files([write(tmp_path, "mystery.csv", text)], db_path)
-    assert "no Fidelity, Bank of America or Amex header" in result["error"]
+    assert "layout isn't one this tracker knows yet" in result["error"] and result["unknown"] == "csv"
     assert "Name,Balance" in result["error"] and "REDACTED,2.00" in result["error"]
     assert "3.00" not in result["error"]
 

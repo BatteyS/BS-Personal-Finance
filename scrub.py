@@ -67,11 +67,12 @@ def normalize_header(name: str) -> str:
 
 
 def find_header(rows: list[list[str]]) -> int | None:
-    """Index of the first row naming a date column and a different amount column, or None."""
+    """Index of the first row naming a date column and a different money column (an amount, or a
+    debit or credit), or None."""
     for index, row in enumerate(rows):
         names = [normalize_header(cell) for cell in row]
         dates = [i for i, name in enumerate(names) if "date" in name]
-        amounts = [i for i, name in enumerate(names) if name.startswith("amount")]
+        amounts = [i for i, name in enumerate(names) if re.match(r"(amount|debit|credit|withdrawal|deposit)", name)]
         if any(d != a for d in dates for a in amounts):
             return index
     return None
@@ -88,7 +89,7 @@ def column_role(header: str) -> str:
         return "account number"
     if "card member" in name:
         return "person"
-    if re.search(r"\b(amount|quantity|commission|fees?|interest)\b", name):
+    if re.search(r"\b(amount|quantity|commission|fees?|interest|debits?|credits?|withdrawals?|deposits?)\b", name):
         return "round"
     return "text"
 
@@ -202,7 +203,7 @@ def scrub_text(text: str, redact: list[str], step: int, stand_ins: dict[str, str
         raise ValueError("no header row found (looked for a row naming a date column and an amount column)")
     header = rows[header_index]
     roles = [column_role(name) for name in header]
-    date_column = next(i for i, name in enumerate(header) if "date" in normalize_header(name))
+    date_column = next(i for i, name in enumerate(header) if "date" in normalize_header(name))  # first date column
     phrases = sorted({phrase.strip() for phrase in redact if phrase.strip()}, key=len, reverse=True)
     counts: Counter[str] = Counter()
 

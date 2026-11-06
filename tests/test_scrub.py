@@ -208,3 +208,10 @@ def test_unrecognized_file_is_refused_without_echoing_it(tmp_path, capsys):
     assert "TEST PERSON" not in printed.out + printed.err
     assert "12345.67" not in printed.out + printed.err
     assert not (tmp_path / "samples").exists()
+
+
+def test_a_debit_and_credit_export_is_scrubbed_too():
+    text = "Date,Description,Debit,Credit,Balance\n10/02/2026,GROCERY TOWN 0042,45.10,,1234.56\n"
+    scrubbed, counts = scrub.scrub_text(text, [], 10, {})
+    assert counts["data rows"] == 1
+    assert "1234.56" not in scrubbed and "45.10" not in scrubbed
