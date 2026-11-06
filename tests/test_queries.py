@@ -382,3 +382,22 @@ def test_the_page_renders_its_four_tabs(tmp_path, monkeypatch):
     comparison = page.tabs[1].table[0].value.set_index("Category")
     assert comparison.loc["Groceries", "Spent in Oct"] == "$210"
     assert comparison.loc["Groceries", "Oct, under or over"] == "$140 under"  # 350 budgeted
+
+
+def test_only_caps_with_an_account_or_a_plan_are_checked(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ACCOUNTS", {key: spec for key, spec in config.ACCOUNTS.items() if key != "fidelity_roth"})
+    caps = queries.cap_status("2026-10", database(tmp_path))
+    assert caps["cap_key"].tolist() == ["401k"]  # no Roth account, and no HSA in the round caps
+
+
+def test_someone_with_only_a_checking_account_gets_a_verdict_on_spending(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ACCOUNTS", {"checking": {"institution": "chase", "kind": "cash", "cap_key": None,
+                                                          "name": "Checking"}})
+    monkeypatch.setattr(config, "TRANSFER_PAIRS", [])
+    path = database(tmp_path, ("i1", "checking", "2026-10-01", 3000.0, "ACME PAYROLL", "income", None),
+                    ("g1", "checking", "2026-10-03", -1200.0, "RENT", "housing", None))
+    result = queries.verdict("2026-10", path)
+    assert (result["green"], result["text"]) == (True, "October 2026: +$1,800 left after spending")
+    assert result["caps"].empty
+    short = database(tmp_path / "short", ("g1", "checking", "2026-10-03", -1200.0, "RENT", "housing", None))
+    assert queries.verdict("2026-10", short)["text"] == "October 2026: $1,200 short"

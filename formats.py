@@ -159,7 +159,9 @@ def suggest(header: list[str], rows: list[list[str]], is_date, as_amount) -> dic
         signs = [as_amount(row[position]) for row in rows if position < len(row)]
         signs = [value for value in signs if value]
     negatives = sum(1 for value in signs if value < 0)
-    descriptions = [name for name in columns if any(word in name for word in DESCRIPTION_NAME)][:1] or \
+    # The best description is the first of DESCRIPTION_NAME's words that names a column: Chase's
+    # checking export has both "Details" (DEBIT or CREDIT) and "Description" (the merchant).
+    descriptions = next(([name] for word in DESCRIPTION_NAME for name in columns if word in name), None) or \
         [name for name in columns if name not in (date, amount, debit, credit)][:1]
     return {
         "date": date,

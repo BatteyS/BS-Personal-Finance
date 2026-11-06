@@ -40,6 +40,8 @@ Either way, until you set it up, the page runs on example accounts and an exampl
 
 ### Set it up
 
+The quickest start is to import an export from your bank: the first time, the page asks which account it's for and learns the file's layout (see **Other banks** below), and sets up your accounts as you go. For the rest, or to describe everything at once:
+
 1. **Your accounts.** Copy `accounts.example.toml` to `data/accounts.toml` and make it describe your own accounts: which Fidelity accounts you have (as the Account column of Fidelity's export names them), which count toward the 401(k), Roth IRA and HSA limits, how often you're paid, and which accounts you move money between. The file explains each field.
 2. **Your budget.** Run `uv run budget.py --interview`. It asks for your salary, contributions, tax settings and each monthly budget line, and writes `data/budget.toml`. Run it again any time; your answers are the defaults.
 3. **Your rules.** Rules sort transactions into categories (`COSTCO` → groceries). They live in `data/rules.csv`, created from `rules.example.csv` the first time, and you add more from the page as new merchants show up.
@@ -65,6 +67,16 @@ Three things to know:
 ```bash
 cd ~/personal-finance && uv run phone.py disable
 ```
+
+## Updating
+
+The page's sidebar says which version you have, and when a newer one is out, shows an **Update** button; close the page and open it again afterwards. Running the installer again does the same, from Terminal:
+
+```bash
+cd ~/personal-finance && sh install.sh
+```
+
+An update never writes over a change of yours: a copy whose files you've edited is left as it is, and says so. From a terminal, `uv run updates.py` says whether there's a newer version, and `uv run updates.py update` brings it in.
 
 ## Each month
 

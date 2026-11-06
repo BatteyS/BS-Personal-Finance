@@ -21,6 +21,7 @@ import formats
 import load
 import phone
 import queries
+import updates
 
 # Categorical slots 1-3 from the reference palette (dataviz skill). Text never wears these colors;
 # the Streamlit theme supplies surfaces and ink in light and dark mode.
@@ -72,8 +73,9 @@ def import_panel() -> None:
     """Sidebar: upload exports, import them once on click, show the last import, re-run the rules."""
     with st.sidebar:
         if config.ACCOUNTS_SOURCE == config.ACCOUNTS_EXAMPLE:
-            st.warning(f"Using the example accounts. Copy accounts.example.toml to {config.ACCOUNTS_PATH} and make "
-                       "it describe your own accounts, then restart the page.")
+            st.info("No accounts set up yet. Import an export from your bank below: the first time, the page "
+                    "asks which account it's for and learns the file's layout. (Or describe your accounts by "
+                    f"hand: copy accounts.example.toml to {config.ACCOUNTS_PATH}.)")
         st.header("Import")
         round_number = st.session_state.get("upload_round", 0)
         uploads = st.file_uploader("Bank exports (CSV, OFX or QFX)", type=["csv", "ofx", "qfx"],
@@ -98,6 +100,27 @@ def import_panel() -> None:
                 st.toast(f"Recategorized {sum(counts.values())} rows")
             except categorize.RulesError as error:
                 st.error(str(error))
+        update_panel()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def newer_version() -> dict | None:
+    """Whether a newer version is out, asked of GitHub at most once an hour."""
+    return updates.check()
+
+
+def update_panel() -> None:
+    """The sidebar's foot: this copy's version, and an Update button when a newer one is out."""
+    current = updates.version()
+    found = newer_version()
+    if found and found["behind"]:
+        st.info(f"{found['latest'] or 'A newer version'} is out; this copy is {current or 'older'}.")
+        if st.button("Update"):
+            changed, message = updates.update()
+            newer_version.clear()
+            (st.success if changed else st.warning)(message)
+    if current:
+        st.caption(f"Personal Finance {current}")
 
 
 def account_picker(prefix: str, institution: str) -> dict | None:

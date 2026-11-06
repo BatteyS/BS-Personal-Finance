@@ -107,13 +107,17 @@ def cap_status(month: str, db_path: Path | None = None) -> pd.DataFrame:
     MissingCapsError for a year without caps.
 
     Behind means more than one contribution short of a straight-line pace, so two-paycheck months
-    and deposits that post a few days late don't count; a planned cap is never behind.
+    and deposits that post a few days late don't count; a planned cap is never behind. Only caps
+    you have an account for, or plan, are listed: someone with no HSA is never behind on one.
     """
     year, number = int(month[:4]), int(month[5:7])
     if year not in config.CAPS:
         raise MissingCapsError(f"config.py has no caps for {year}; add a {year} row to CAPS to see the bars.")
+    tracked = {spec["cap_key"] for spec in config.ACCOUNTS.values() if spec.get("cap_key")} | config.PLANNED_CAPS
     rows = []
     for cap_key, cap in config.CAPS[year].items():
+        if cap_key not in tracked:
+            continue
         pace = cents(cap * number / 12)
         planned = cap_key in config.PLANNED_CAPS
         so_far = pace if planned else contributions(cap_key, month, db_path)
@@ -130,7 +134,8 @@ def cap_status(month: str, db_path: Path | None = None) -> pd.DataFrame:
             "short": cents(pace - so_far) if behind else 0.0,
             "over": cents(so_far - cap) if so_far > cap else 0.0,  # an excess contribution to withdraw
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["cap_key", "label", "contributions", "cap", "pace", "behind", "planned",
+                                       "short", "over"])
 
 
 def brokerage_inflow_by_month(db_path: Path | None = None) -> pd.Series:
@@ -151,7 +156,8 @@ def brokerage_inflow(month: str, db_path: Path | None = None) -> float:
 def verdict(month: str, db_path: Path | None = None, *, inflow_by_month: pd.Series | None = None,
             totals: pd.DataFrame | None = None) -> dict:
     """The banner: green when brokerage inflow is above zero, no cap is behind pace and the month
-    isn't short; red otherwise.
+    isn't short; red otherwise. Without a brokerage account, brokerage inflow is left out of both
+    the color and the text, which says what was left after spending instead.
 
     "Short" is how much the month's spending beat its income, and is left off when spending didn't.
     The text also names any cap behind pace or over the cap. The cap rows come back too, under "caps".
@@ -164,15 +170,21 @@ def verdict(month: str, db_path: Path | None = None, *, inflow_by_month: pd.Seri
     caps = cap_status(month, db_path)
     income, spending = (totals.loc[month].tolist() if month in totals.index else (0.0, 0.0))
     short = max(cents(spending - income), 0.0)
-    text = f"{month_label(month)}: {signed_money(inflow)} to brokerage"
-    if short > 0:
-        text += f", {money(short)} short"
+    has_brokerage = any(spec["kind"] == "brokerage" for spec in config.ACCOUNTS.values())
+    if has_brokerage:
+        text = f"{month_label(month)}: {signed_money(inflow)} to brokerage"
+        if short > 0:
+            text += f", {money(short)} short"
+    elif short > 0:
+        text = f"{month_label(month)}: {money(short)} short"
+    else:
+        text = f"{month_label(month)}: {signed_money(cents(income - spending))} left after spending"
     behind = caps.loc[caps["behind"], "label"].tolist()
     if behind:
         text += f" · {' and '.join(behind)} behind pace"
     for row in caps[caps["over"] > 0].itertuples():
         text += f" · {row.label} over the cap by {money(row.over)}"
-    green = bool(inflow > 0 and not caps["behind"].any() and short == 0)
+    green = bool((inflow > 0 or not has_brokerage) and not caps["behind"].any() and short == 0)
     return {"green": green, "inflow": inflow, "income": income, "spending": spending, "short": short, "text": text,
             "caps": caps}
 

@@ -23,6 +23,21 @@ import load
 from load import normalize
 
 KINDS = {"credit": "a credit card", "cash": "checking or savings", "brokerage": "a brokerage account"}
+# What a first accounts.toml starts with when the page writes it: the pay schedule and no planned
+# caps, but none of the example's accounts, which aren't the user's.
+FIRST_ACCOUNTS = """# Your accounts, started by the page when you taught it your first file. Add more there, or here
+# by hand: accounts.example.toml explains every field, including the caps for a 401(k), Roth IRA
+# or HSA and the transfer pairs between your accounts.
+
+# Contributions a year toward each cap: 26 if you're paid every two weeks, 24 twice a month, 12 monthly.
+[contributions_per_year]
+401k = 26
+hsa = 26
+roth = 12
+
+[planned]
+caps = []
+"""
 
 
 def save_upload(name: str, data: bytes, now: datetime | None = None, exports_dir: Path | None = None) -> Path:
@@ -175,8 +190,10 @@ def add_account(name: str, kind: str, institution: str, paid_from: str | None = 
     if kind not in KINDS:
         raise config.AccountsError(f"kind must be one of {', '.join(KINDS)}")
     key = account_key(name)
-    source = config.ACCOUNTS_PATH if config.ACCOUNTS_PATH.exists() else config.ACCOUNTS_EXAMPLE
-    text = source.read_text(encoding="utf-8").rstrip("\n") + "\n\n[[account]]\n"
+    if config.ACCOUNTS_PATH.exists():
+        text = config.ACCOUNTS_PATH.read_text(encoding="utf-8").rstrip("\n") + "\n\n[[account]]\n"
+    else:
+        text = FIRST_ACCOUNTS + "\n[[account]]\n"
     text += "".join(f"{field} = {budget.toml_value(value)}\n" for field, value in
                     (("key", key), ("name", name.strip()), ("institution", institution.strip().lower()), ("kind", kind)))
     if paid_from:

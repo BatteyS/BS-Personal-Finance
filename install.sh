@@ -13,13 +13,15 @@
 #
 #   1. Apple's Command Line Tools, which bring git. macOS asks you to click Install.
 #   2. uv, which runs the Python this tracker is pinned to.
-#   3. Your copy, in ~/personal-finance, and its Python packages.
+#   3. Your copy, in ~/personal-finance, and its Python packages. A copy that's already there is
+#      brought up to date, unless it has changes of yours.
 #   4. Personal Finance on your Desktop, which starts the page and opens it.
 #   5. If you want it, Personal Finance on your phone too: an icon on its home screen that opens
 #      the page from anywhere over Tailscale (phone.py).
 #
-# Run it again whenever you like: what is done is skipped, and Personal Finance on the Desktop is
-# made again, which is how to bring it back or point it at a copy you moved. Everything it runs
+# Run it again whenever you like: what is done is skipped, your copy is brought up to the newest
+# version, and Personal Finance on the Desktop is made again, which is how to bring it back or point
+# it at a copy you moved. Everything it runs
 # prints into ~/Library/Logs/Personal Finance install.log.
 #
 # Options:
@@ -62,6 +64,7 @@ wait_for_return() {
 DIR=
 OPEN=1
 PHONE=
+UPDATED=
 while [ $# -gt 0 ]; do
   case $1 in
     --dir) [ $# -ge 2 ] || die "--dir needs a folder after it."; DIR=$2; shift ;;
@@ -153,6 +156,43 @@ ensure_uv() {
 
 # ---------------------------------------------------------------- the copy
 
+# Bring a copy that's already there up to date: a fast-forward of main, and only when it's on main
+# with no changes of yours, so nothing of yours is ever written over (updates.py does the same).
+update_copy() {
+  [ -d "$DIR/.git" ] || return 0
+  branch=$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if [ "$branch" != main ]; then
+    note "It's on the branch $branch, not main, so it wasn't updated."
+    return 0
+  fi
+  if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    note "It has changes of yours to its files, so it wasn't updated."
+    return 0
+  fi
+  before=$(git -C "$DIR" rev-parse HEAD)
+  if ! GIT_TERMINAL_PROMPT=0 quiet git -C "$DIR" pull --ff-only --quiet origin main; then
+    note "It couldn't be brought up to date just now (see $LOG); it works as it is."
+    return 0
+  fi
+  if [ "$(git -C "$DIR" rev-parse HEAD)" = "$before" ]; then
+    ok "already up to date: $(git -C "$DIR" log -1 --format=%s)"
+  else
+    UPDATED=yes
+    ok "brought up to date: $(git -C "$DIR" log -1 --format=%s)"
+  fi
+}
+
+# A page started before the update still runs the old code: start it again.
+restart_page() {
+  [ -n "$UPDATED" ] || return 0
+  agent="gui/$(id -u)/io.github.batteys.bs-personal-finance.page"
+  if launchctl print "$agent" >/dev/null 2>&1; then
+    quiet launchctl kickstart -k "$agent"
+  else
+    quiet /bin/sh "$DIR/launch.sh" --stop
+  fi
+}
+
 ensure_copy() {
   step "3. Your copy"
   if [ -e "$DIR" ] && ! is_copy "$DIR"; then
@@ -164,6 +204,7 @@ ensure_copy() {
     ok "made $DIR"
   else
     ok "$DIR"
+    update_copy
   fi
   case $DIR in
     "$HOME/Documents"/*|"$HOME/Desktop"/*|"$HOME/Library/Mobile Documents"/*)
@@ -261,6 +302,7 @@ preflight
 ensure_git
 ensure_uv
 ensure_copy
+restart_page
 ensure_app
 ensure_phone
 

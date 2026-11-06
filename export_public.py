@@ -44,7 +44,7 @@ ENGINE = [
     "CLAUDE.md", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
     "accounts.example.toml", "budget.example.toml", "formats.example.toml", "rules.example.csv",
     "actions.py", "budget.py", "categorize.py", "config.py", "dashboard.py", "db.py", "export_public.py",
-    "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py",
+    "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py", "updates.py",
     "install.sh", "launch.sh", "phone.py", "icon.py",
     "tests/*",
 ]

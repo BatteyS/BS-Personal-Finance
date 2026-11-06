@@ -92,12 +92,13 @@ def test_a_new_card_is_added_with_the_pair_that_pays_it():
     assert actions.add_account("Chase Freedom", "credit", "chase") == "chase_freedom_2"  # a name taken twice
 
 
-def test_a_first_account_starts_from_the_example(tmp_path, monkeypatch):
+def test_a_first_account_starts_fresh_without_the_examples(tmp_path, monkeypatch):
     (tmp_path / "accounts.toml").unlink()
     monkeypatch.setattr(config, "ACCOUNTS_SOURCE", config.ACCOUNTS_EXAMPLE)
     actions.add_account("Credit Union", "cash", "union")
     assert (tmp_path / "accounts.toml").exists()
-    assert {"bofa_checking", "credit_union"} <= set(config.ACCOUNTS)
+    assert list(config.ACCOUNTS) == ["credit_union"]  # none of the example's Fidelity, BofA or Amex accounts
+    assert config.CONTRIBUTIONS_PER_YEAR == {"401k": 26, "hsa": 26, "roth": 12}
     assert config.ACCOUNTS_SOURCE == tmp_path / "accounts.toml"
 
 
@@ -157,3 +158,20 @@ def test_the_page_teaches_a_file_it_does_not_know(tmp_path):
     assert "chase_freedom" in config.ACCOUNTS
     assert len(stored()) == 3
     assert not [heading for heading in page.subheader if heading.value.startswith("Teach")]
+
+
+CHASE_CHECKING = (
+    "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\r\n"
+    'DEBIT,10/15/2026,"CORNER CAFE      CHICAGO IL  10/14",-12.50,DEBIT_CARD,1987.50,,\r\n'
+    'CREDIT,10/14/2026,"ACME PAYROLL     PPD ID: 0000000000",1500.00,ACH_CREDIT,2000.00,,\r\n'
+)
+
+
+def test_a_chase_style_checking_export_is_guessed_right(tmp_path):
+    """Chase's checking export (as its layout is known, with made-up rows) has a Details column
+    ahead of Description, and a trailing comma on every row."""
+    path = write(tmp_path, "Chase1234_Activity_20261106.CSV", CHASE_CHECKING)
+    info = actions.read_unknown(path)
+    assert info["suggest"]["description"] == ["description"] and info["suggest"]["date"] == "posting date"
+    preview = actions.preview_layout(path, {"name": "Chase checking", **info["suggest"]}, info["header"])
+    assert [(row["amount"], row["description"].split()[0]) for row in preview] == [(-12.5, "CORNER"), (1500.0, "ACME")]
