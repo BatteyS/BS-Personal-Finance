@@ -1,0 +1,100 @@
+# Example accounts. Copy it to the data folder as accounts.toml (data/accounts.toml on the laptop)
+# and make it describe your own accounts. That copy stays out of git.
+#
+# Each [[account]] is one account the exports carry:
+#   key             a short id, stored with every transaction; don't change it once you have data
+#   name            what the page calls it
+#   institution     fidelity, bofa or amex: which export it comes from
+#   kind            cash, brokerage, retirement, hsa or credit
+#   cap             401k, roth or hsa for an account whose contributions count toward that IRS limit
+#   fidelity_label  for a Fidelity account, text from the export's Account column (its nickname or
+#                   plan name), matched without regard to case; when several match, the longest
+#                   wins. Never an account number.
+#
+# Each [[transfer]] is a pair of your own accounts that money moves between. A move between them
+# nets out instead of counting as spending. Pairs are unordered, and matched top to bottom, so put
+# the more specific ones first. A hint, when given, must appear in that side's description.
+
+# Contributions a year toward each cap, for the pace check's one contribution of slack:
+# 26 if you're paid every two weeks, 24 twice a month, 12 monthly.
+[contributions_per_year]
+401k = 26
+hsa = 26
+roth = 12
+
+# Caps with no export to measure yet (an HSA held somewhere else, say): the page assumes you max
+# them, spread evenly through the year, and they never count as behind. Leave it empty once every
+# capped account exports.
+[planned]
+caps = []
+
+[[account]]
+key = "fidelity_cash"
+name = "Cash Management"
+institution = "fidelity"
+kind = "cash"
+fidelity_label = "CASH MANAGEMENT"
+
+[[account]]
+key = "fidelity_brokerage"
+name = "Brokerage"
+institution = "fidelity"
+kind = "brokerage"
+fidelity_label = "INDIVIDUAL"
+
+[[account]]
+key = "fidelity_401k"
+name = "401(k)"
+institution = "fidelity"
+kind = "retirement"
+cap = "401k"
+fidelity_label = "401(K)"
+
+[[account]]
+key = "fidelity_roth"
+name = "Roth IRA"
+institution = "fidelity"
+kind = "retirement"
+cap = "roth"
+fidelity_label = "ROTH IRA"
+
+[[account]]
+key = "fidelity_hsa"
+name = "HSA"
+institution = "fidelity"
+kind = "hsa"
+cap = "hsa"
+fidelity_label = "HEALTH SAVINGS"
+
+[[account]]
+key = "bofa_checking"
+name = "BofA checking"
+institution = "bofa"
+kind = "cash"
+
+[[account]]
+key = "amex"
+name = "Amex"
+institution = "amex"
+kind = "credit"
+
+[[transfer]]
+accounts = ["bofa_checking", "amex"]  # card payments
+hints = { bofa_checking = "AMERICAN EXPRESS", amex = "PAYMENT" }
+
+[[transfer]]
+accounts = ["fidelity_cash", "fidelity_brokerage"]
+
+[[transfer]]
+accounts = ["fidelity_cash", "fidelity_roth"]  # Roth contributions paid from cash
+
+[[transfer]]
+accounts = ["fidelity_brokerage", "fidelity_roth"]  # or from the brokerage
+
+[[transfer]]
+accounts = ["bofa_checking", "fidelity_brokerage"]
+hints = { bofa_checking = "FID BKG SVC" }  # how Fidelity transfers read on a BofA statement
+
+[[transfer]]
+accounts = ["bofa_checking", "fidelity_cash"]
+hints = { bofa_checking = "FID BKG SVC" }

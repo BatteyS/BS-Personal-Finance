@@ -1,0 +1,249 @@
+# Example budget with made-up amounts. Copy it to the data folder as budget.toml (data/budget.toml
+# on the laptop) and replace the amounts with your own. That copy stays out of git.
+#
+# Lines mirror a budget spreadsheet: every dollar of gross pay goes to a line, and the
+# line with from = "surplus" takes what's left (it goes to the taxable brokerage). A line has either
+# monthly = an amount you type, or from = one of the calculated amounts:
+#   federal_income_tax, social_security, medicare, illinois_income_tax  (from [tax] below)
+#   retirement_401k, hsa, roth_ira, hdhp_premium                        (from [income] and [hsa])
+#   commuter_benefit  (minus the line named in covers, up to the monthly cap)
+#   surplus
+# class is Necessary, Discretionary or Surplus. Groups are shown in the order they first appear.
+
+[income]
+salary = 100_000                      # annual, gross
+retirement_401k = 24_500              # annual, traditional (pre-tax); the IRS employee limit to max it
+roth_ira = 7_500                      # annual, after-tax; the IRS limit to max it
+hdhp_premium_monthly = 50             # pre-tax
+commuter_benefit_cap_monthly = 75     # the most the employer pays toward commuting each month
+
+[hsa]
+limit = 4_400                         # self-only limit, covering your and your employer's money together
+employer = 500                        # employer's annual contribution; payroll covers the rest of the limit
+
+[employer_match]
+rate = 0.5                            # employer adds 50 cents per dollar you put in...
+cap_share_of_salary = 0.06            # ...on contributions up to 6% of salary
+
+# Tax parameters for 2026, single filer. Check them against your spreadsheet's Assumptions tab.
+[tax]
+federal_standard_deduction = 16_100
+social_security_rate = 0.062
+social_security_wage_base = 184_500
+medicare_rate = 0.0145
+illinois_rate = 0.0495                # flat; Chicago has no city income tax
+illinois_exemption = 2_925
+federal_brackets = [                  # [taxable income over, marginal rate]
+    [0, 0.10],
+    [12_400, 0.12],
+    [50_400, 0.22],
+    [105_700, 0.24],
+    [201_775, 0.32],
+    [256_225, 0.35],
+    [640_600, 0.37],
+]
+
+[[line]]
+group = "Taxes"
+item = "Federal income tax"
+class = "Necessary"
+from = "federal_income_tax"
+note = "Progressive brackets, after the standard deduction"
+
+[[line]]
+group = "Taxes"
+item = "Social Security"
+class = "Necessary"
+from = "social_security"
+note = "Payroll HSA and the premium reduce it; the 401(k) doesn't"
+
+[[line]]
+group = "Taxes"
+item = "Medicare"
+class = "Necessary"
+from = "medicare"
+
+[[line]]
+group = "Taxes"
+item = "Illinois income tax"
+class = "Necessary"
+from = "illinois_income_tax"
+note = "Flat rate; no Chicago city income tax"
+
+[[line]]
+group = "Pre-tax savings"
+item = "401(k)"
+class = "Necessary"
+from = "retirement_401k"
+note = "The employer match is extra and shown in the summary, not here"
+
+[[line]]
+group = "Pre-tax savings"
+item = "HSA"
+class = "Necessary"
+from = "hsa"
+note = "The limit minus the employer's contribution"
+
+[[line]]
+group = "After-tax savings"
+item = "Roth IRA"
+class = "Necessary"
+from = "roth_ira"
+note = "Funded from take-home pay"
+
+[[line]]
+group = "Health"
+item = "HDHP premium"
+class = "Necessary"
+from = "hdhp_premium"
+note = "Pre-tax"
+
+[[line]]
+group = "Health"
+item = "Out-of-pocket medical / pharmacy"
+class = "Necessary"
+monthly = 40
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Housing"
+item = "Rent"
+class = "Necessary"
+monthly = 1_800
+
+[[line]]
+group = "Housing"
+item = "Renter's insurance"
+class = "Necessary"
+monthly = 15
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Utilities & phone"
+item = "Electric"
+class = "Necessary"
+monthly = 60
+
+[[line]]
+group = "Utilities & phone"
+item = "Gas / heat"
+class = "Necessary"
+monthly = 60
+
+[[line]]
+group = "Utilities & phone"
+item = "Internet"
+class = "Necessary"
+monthly = 50
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Utilities & phone"
+item = "Phone"
+class = "Necessary"
+monthly = 40
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Food"
+item = "Groceries"
+class = "Necessary"
+monthly = 350
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Food"
+item = "Dining out, takeout & coffee"
+class = "Discretionary"
+monthly = 250
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Transportation"
+item = "CTA 30-day pass"
+class = "Necessary"
+monthly = 75
+
+[[line]]
+group = "Transportation"
+item = "Rideshare / Divvy (non-commute)"
+class = "Discretionary"
+monthly = 40
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Transportation"
+item = "Employer commuter benefit"
+class = "Necessary"
+from = "commuter_benefit"
+covers = "CTA 30-day pass"
+note = "The employer pays the pass up to the monthly cap"
+
+[[line]]
+group = "Personal & household"
+item = "Household & personal care"
+class = "Necessary"
+monthly = 50
+
+[[line]]
+group = "Personal & household"
+item = "Clothing"
+class = "Discretionary"
+monthly = 60
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Personal & household"
+item = "Gym / fitness"
+class = "Discretionary"
+monthly = 40
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Entertainment & social"
+class = "Discretionary"
+monthly = 150
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Subscriptions & streaming"
+class = "Discretionary"
+monthly = 30
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Hobbies"
+class = "Discretionary"
+monthly = 50
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Gifts & donations"
+class = "Discretionary"
+monthly = 50
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Travel"
+class = "Discretionary"
+monthly = 150
+note = "Placeholder in the spreadsheet"
+
+[[line]]
+group = "Lifestyle"
+item = "Miscellaneous buffer"
+class = "Discretionary"
+monthly = 75
+note = "Catch-all for things you'll forget"
+
+[[line]]
+group = "Surplus"
+item = "Unallocated → taxable brokerage"
+class = "Surplus"
+from = "surplus"
+note = "Whatever is left after every line above; negative means over budget"

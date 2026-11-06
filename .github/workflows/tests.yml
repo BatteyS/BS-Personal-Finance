@@ -1,0 +1,21 @@
+# The tests, on every push to main and every pull request, then the check that no file meant to be
+# shared carries personal data: the same check export_public.py runs before an export. There is no
+# data folder here, so the check reads its terms from git and, in the private repo, from
+# tests/accounts.samples.toml.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run export_public.py --check

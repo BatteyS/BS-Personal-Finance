@@ -1,0 +1,14 @@
+# Streamlit settings for every run of the dashboard, on the laptop and in the container.
+
+[browser]
+# Streamlit sends usage statistics unless told not to. This page shows money: it sends nothing.
+gatherUsageStats = false
+
+[server]
+headless = true
+# Serves static/ at /app/static/: the phone's home-screen icon, which launch.sh draws there.
+enableStaticServing = true
+
+[client]
+# Hide the developer toolbar (Deploy and friends); this page is only ever read.
+toolbarMode = "minimal"

@@ -1,0 +1,8 @@
+pattern,category,match
+COSTCO,groceries,contains
+TRADER JOE,groceries,contains
+SHELL OIL,gas,contains
+^CTA,transit,regex
+RENT,housing,contains
+PAYROLL,income,contains
+CONTRIBUTION,retirement,contains

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./data/**)",
+      "Read(./exports/**)",
+      "Read(**/*.db)",
+      "Read(**/*.db-*)",
+      "Read(~/Downloads/**/*.csv)",
+      "Read(~/Downloads/**/*.xlsx)",
+      "Read(~/Downloads/**/*.ofx)",
+      "Read(~/Downloads/**/*.qfx)"
+    ]
+  }
+}

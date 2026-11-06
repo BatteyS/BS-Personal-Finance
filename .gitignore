@@ -1,0 +1,44 @@
+# Real financial data never goes into git (see CLAUDE.md).
+data/
+exports/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# A CSV is bank data until proven otherwise. Tracked exceptions: the scrubbed samples that
+# scrub.py writes, and the starter rules.
+*.csv
+!/rules.example.csv
+!/samples/*.scrubbed.csv
+
+# The budget holds real salary and spending figures; only the example is tracked.
+budget.toml
+
+# Other formats the banks export.
+*.xls
+*.xlsx
+*.ofx
+*.qfx
+*.qbo
+
+# Python and uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Personal Claude Code overrides
+.claude/settings.local.json
+
+# The launcher records the page it started here (launch.sh).
+.page.pid
+# The phone's home-screen icon, drawn by launch.sh (icon.py).
+static/

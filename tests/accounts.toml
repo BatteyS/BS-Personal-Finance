@@ -1,0 +1,113 @@
+# Made-up accounts for the tests that build their own rows: the same keys and transfer pairs as a
+# full setup (two brokerages, two 401(k) plans), with generic Fidelity names. tests/conftest.py loads
+# it for every test, so no test depends on the data folder.
+
+[contributions_per_year]
+401k = 26
+hsa = 26
+roth = 12
+
+[planned]
+caps = []
+
+[[account]]
+key = "fidelity_cash"
+name = "Cash Management"
+institution = "fidelity"
+kind = "cash"
+fidelity_label = "CASH MANAGEMENT"
+
+[[account]]
+key = "fidelity_brokerage"
+name = "Individual"
+institution = "fidelity"
+kind = "brokerage"
+fidelity_label = "INDIVIDUAL"
+
+[[account]]
+key = "fidelity_household"
+name = "Joint"
+institution = "fidelity"
+kind = "brokerage"
+fidelity_label = "JOINT WROS"
+
+[[account]]
+key = "fidelity_401k"
+name = "401(k)"
+institution = "fidelity"
+kind = "retirement"
+cap = "401k"
+fidelity_label = "ACME CORP"
+
+[[account]]
+key = "fidelity_401k_old"
+name = "Old 401(k)"
+institution = "fidelity"
+kind = "retirement"
+cap = "401k"
+fidelity_label = "OLDCO 401(K)"
+
+[[account]]
+key = "fidelity_roth"
+name = "Roth IRA"
+institution = "fidelity"
+kind = "retirement"
+cap = "roth"
+fidelity_label = "ROTH IRA"
+
+[[account]]
+key = "fidelity_hsa"
+name = "Fidelity HSA"
+institution = "fidelity"
+kind = "hsa"
+cap = "hsa"
+fidelity_label = "HEALTH SAVINGS"
+
+[[account]]
+key = "bofa_checking"
+name = "BofA checking"
+institution = "bofa"
+kind = "cash"
+
+[[account]]
+key = "amex"
+name = "Amex"
+institution = "amex"
+kind = "credit"
+
+[[transfer]]
+accounts = ["bofa_checking", "amex"]
+hints = { bofa_checking = "AMERICAN EXPRESS", amex = "PAYMENT" }
+
+[[transfer]]
+accounts = ["fidelity_401k_old", "fidelity_401k"]  # rollovers between the plans
+
+[[transfer]]
+accounts = ["fidelity_cash", "fidelity_brokerage"]
+
+[[transfer]]
+accounts = ["fidelity_cash", "fidelity_household"]
+
+[[transfer]]
+accounts = ["fidelity_brokerage", "fidelity_household"]
+
+[[transfer]]
+accounts = ["fidelity_cash", "fidelity_roth"]
+
+[[transfer]]
+accounts = ["fidelity_brokerage", "fidelity_roth"]
+
+[[transfer]]
+accounts = ["fidelity_household", "fidelity_roth"]
+
+[[transfer]]
+accounts = ["bofa_checking", "fidelity_brokerage"]
+hints = { bofa_checking = "FID BKG SVC" }
+
+[[transfer]]
+accounts = ["bofa_checking", "fidelity_household"]
+hints = { bofa_checking = "FID BKG SVC" }
+
+[[transfer]]
+accounts = ["bofa_checking", "fidelity_cash"]
+hints = { bofa_checking = "FID BKG SVC" }

@@ -1,0 +1,19 @@
+[project]
+name = "finance-tracker"
+version = "0.1.0"
+description = "Monthly check of Fidelity, Bank of America and Amex exports against the retirement caps and brokerage flow"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.1.1",
+    "plotly>=7.1.0",
+    "streamlit>=1.67.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
