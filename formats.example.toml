@@ -1,5 +1,5 @@
 # Layouts for banks with no built-in parser, and OFX/QFX account matches. The page writes these
-# for you when it meets a file it doesn't know; this file shows their shape. Your own copy is
+# for you when it meets a file it doesn't know (Teach this file); this file shows their shape. Your own copy is
 # data/formats.toml, which stays out of git. See formats.py for every field.
 
 # A CSV with one signed amount column. Its header row must have exactly these columns, in any

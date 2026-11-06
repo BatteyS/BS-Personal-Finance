@@ -6,6 +6,8 @@ See docs/spec.md, Dashboard.
     uv run streamlit run dashboard.py
 """
 
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -15,6 +17,8 @@ import actions
 import budget
 import categorize
 import config
+import formats
+import load
 import phone
 import queries
 
@@ -72,14 +76,17 @@ def import_panel() -> None:
                        "it describe your own accounts, then restart the page.")
         st.header("Import")
         round_number = st.session_state.get("upload_round", 0)
-        uploads = st.file_uploader("Bank exports (CSV)", type="csv", accept_multiple_files=True, key=f"uploads_{round_number}")
+        uploads = st.file_uploader("Bank exports (CSV, OFX or QFX)", type=["csv", "ofx", "qfx"],
+                                   accept_multiple_files=True, key=f"uploads_{round_number}")
         if st.button("Import", type="primary", disabled=not uploads):
             paths = [actions.save_upload(upload.name, upload.getvalue()) for upload in uploads]
             st.session_state["import_results"] = actions.import_files(paths)
             st.session_state["upload_round"] = round_number + 1  # a fresh key empties the uploader
             st.rerun()
         for result in st.session_state.get("import_results", []):
-            if "error" in result:
+            if result.get("unknown"):
+                st.warning(f"{result['file']}: a layout this tracker doesn't know yet. Teach it on the right.")
+            elif "error" in result:
                 st.error(f"{result['file']}: {result['error']}")
         last = queries.last_import()
         if not last.empty:
@@ -91,6 +98,127 @@ def import_panel() -> None:
                 st.toast(f"Recategorized {sum(counts.values())} rows")
             except categorize.RulesError as error:
                 st.error(str(error))
+
+
+def account_picker(prefix: str, institution: str) -> dict | None:
+    """Pick one of your accounts for a file, or describe a new one. Returns {"key": ...} for an
+    existing account, the new account's fields, or None while a new one is missing its name."""
+    keys = list(config.ACCOUNTS)
+    choice = st.selectbox("Which account is this file for?", [*keys, "new"], key=f"{prefix}_account",
+                          index=len(keys), format_func=lambda key: "A new account…" if key == "new"
+                          else config.ACCOUNTS[key]["name"])
+    if choice != "new":
+        return {"key": choice}
+    name, kind = st.columns(2)
+    account_name = name.text_input("New account's name", key=f"{prefix}_name", placeholder="Chase Freedom")
+    kind_key = kind.radio("It's", list(actions.KINDS), format_func=actions.KINDS.get, key=f"{prefix}_kind")
+    bank = st.text_input("Institution, as one short word", value=institution, key=f"{prefix}_institution")
+    paid_from, hint = None, ""
+    if kind_key == "credit":
+        payers = [key for key, spec in config.ACCOUNTS.items() if spec["kind"] == "cash"]
+        paid_from = st.selectbox("Which account pays this card?", [None, *payers], key=f"{prefix}_payer",
+                                 format_func=lambda key: "None of these" if key is None else config.ACCOUNTS[key]["name"])
+        if paid_from:
+            hint = st.text_input("How the payment reads on that account (optional, helps match it)",
+                                 key=f"{prefix}_hint", placeholder="CHASE CREDIT CRD")
+    if not account_name.strip() or not bank.strip():
+        return None
+    return {"name": account_name, "kind": kind_key, "institution": bank, "paid_from": paid_from, "hint": hint}
+
+
+def chosen_account(account: dict) -> str:
+    """The key of the picked account, adding the new one to accounts.toml first."""
+    if "key" in account:
+        return account["key"]
+    return actions.add_account(account["name"], account["kind"], account["institution"],
+                               account["paid_from"], account["hint"])
+
+
+def finish_teaching(result: dict, outcome: list[dict]) -> None:
+    """Swap a taught file's old result for its import, and redraw."""
+    st.session_state["import_results"] = [
+        *(other for other in st.session_state.get("import_results", []) if other is not result), *outcome]
+    st.rerun()
+
+
+def teach_ofx(result: dict) -> None:
+    """Match an OFX file's account, by its last four digits, to one of yours."""
+    st.markdown(f"An OFX file for an account ending **{result['account_ends'] or '(no number)'}**. "
+                "Which of your accounts is it? Only those four digits are kept.")
+    words = actions.plain_name(result["file"])
+    account = account_picker(f"ofx_{result['file']}", (words[0] if words else "").lower())
+    if st.button("Save and import", type="primary", disabled=account is None, key=f"ofx_{result['file']}_save"):
+        try:
+            finish_teaching(result, actions.teach_ofx(Path(result["path"]), result["account_ends"], chosen_account(account)))
+        except (config.AccountsError, formats.FormatsError, load.LoadError) as error:
+            st.error(str(error))
+
+
+def teach_csv(result: dict) -> None:
+    """Show a CSV no layout matches, let the columns be named, preview the result, and save it."""
+    path, prefix = Path(result["path"]), f"csv_{result['file']}"
+    info = actions.read_unknown(path)
+    if not info.get("header"):
+        st.error("No header row with dates under it was found, so this file can't be taught. Is it a CSV export?")
+        return
+    header, rows, guess = info["header"], info["rows"], info["suggest"]
+    width = len(header)
+    st.dataframe(pd.DataFrame([(row + [""] * width)[:width] for row in rows], columns=[c or " " for c in header]),
+                 hide_index=True, width="stretch")
+    columns = [name for name in (formats.header_key(cell) for cell in header) if name]
+    words = actions.plain_name(result["file"])
+    left, right = st.columns(2)
+    fields = {"name": left.text_input("What to call this layout", value=" ".join(words[:3]) or "New bank",
+                                      key=f"{prefix}_layout")}
+    fields["date"] = right.selectbox("Date column", columns, key=f"{prefix}_date",
+                                     index=columns.index(guess["date"]) if guess["date"] in columns else 0)
+    modes = ["amount", "debit and credit"]
+    fields["mode"] = st.radio("Amounts are", modes, horizontal=True, key=f"{prefix}_mode", index=modes.index(guess["mode"]),
+                              format_func={"amount": "in one column", "debit and credit": "in separate debit and credit columns"}.get)
+    left, right = st.columns(2)
+    if fields["mode"] == "amount":
+        fields["amount"] = left.selectbox("Amount column", columns, key=f"{prefix}_amount",
+                                          index=columns.index(guess["amount"]) if guess["amount"] in columns else 0)
+        signs = ["negative", "positive"]
+        fields["spending_is"] = right.radio("Spending shows as", signs, key=f"{prefix}_spending",
+                                            index=signs.index(guess["spending_is"]),
+                                            format_func={"negative": "negative, like -12.50", "positive": "positive, like 12.50"}.get)
+    else:
+        fields["debit"] = left.selectbox("Debit (money out) column", columns, key=f"{prefix}_debit",
+                                         index=columns.index(guess["debit"]) if guess["debit"] in columns else 0)
+        fields["credit"] = right.selectbox("Credit (money in) column", columns, key=f"{prefix}_credit",
+                                           index=columns.index(guess["credit"]) if guess["credit"] in columns else 0)
+    fields["description"] = st.multiselect("Description column(s)", columns, key=f"{prefix}_description",
+                                           default=[name for name in guess["description"] if name in columns])
+    account = account_picker(prefix, (words[0] if words else "").lower())
+    ready = bool(fields["description"]) and account is not None and bool(fields["name"].strip())
+    if fields["description"]:
+        try:
+            preview = actions.preview_layout(path, fields, header)
+            st.caption("The first transactions as they'll be stored (money out negative):")
+            st.dataframe(pd.DataFrame(preview, columns=["date", "description", "amount"]), hide_index=True,
+                         width="stretch", column_config={"amount": st.column_config.NumberColumn("amount", format="dollar")})
+        except load.LoadError as error:
+            st.error(f"That column doesn't hold amounts: {error}")
+            ready = False
+    if st.button("Save and import", type="primary", disabled=not ready, key=f"{prefix}_save"):
+        try:
+            finish_teaching(result, actions.teach_csv(path, fields, header, chosen_account(account)))
+        except (config.AccountsError, formats.FormatsError, load.LoadError) as error:
+            st.error(str(error))
+
+
+def teach_panel() -> None:
+    """Above the tabs, while an import has files no layout matches: a form for each, to teach it."""
+    pending = [result for result in st.session_state.get("import_results", []) if result.get("unknown")]
+    if not pending:
+        return
+    st.subheader("Teach this file" if len(pending) == 1 else f"Teach these {len(pending)} files")
+    st.caption("Once taught, files with the same layout import by themselves. Layouts are saved to "
+               "data/formats.toml, and new accounts to data/accounts.toml.")
+    for result in pending:
+        with st.expander(result["file"], expanded=True):
+            (teach_ofx if result["unknown"] == "ofx" else teach_csv)(result)
 
 
 def sparkline(frame) -> go.Figure:
@@ -422,6 +550,7 @@ def assumptions_page(plan: dict, example: bool) -> None:
 
 
 import_panel()
+teach_panel()
 this_month, comparison_tab, budget_tab, assumptions_tab = st.tabs(
     ["This month", "Budget vs actual", "Budget", "Assumptions & taxes"])
 with this_month:

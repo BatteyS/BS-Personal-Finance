@@ -75,7 +75,7 @@ cd ~/personal-finance && uv run phone.py disable
 2. **Import them** from the page's sidebar.
 3. **Read the verdict,** then clear **Uncategorized**: pick each new merchant, check the suggested pattern, choose a category, save. Every save re-sorts all your months.
 
-**Other banks.** Fidelity, Bank of America and Amex are built in. For any other institution, download its CSV, or its OFX/QFX ("Quicken" or "Money") file if it offers one, and describe it once in `data/formats.toml`, following `formats.example.toml`: which columns hold the date, amount and description for a CSV, or the last four digits of the account number for OFX. Add the account itself to `data/accounts.toml` first.
+**Other banks.** Fidelity, Bank of America and Amex are built in. For any other institution, download its CSV, or its OFX/QFX ("Quicken" or "Money") file if it offers one, and import it the same way. The first time, the page shows **Teach this file**: the file's first rows, with first guesses at which columns hold the date, the amount and the description, and whether spending shows as negative or positive. Check them against the preview of how the rows will be stored, pick the account (or describe a new one, and for a card, which account pays it), and click **Save and import**. From then on, files with that layout import by themselves. An OFX file only asks which of your accounts it belongs to. What you teach is saved in `data/formats.toml` (`formats.example.toml` shows its shape).
 
 Moves between your own accounts (a card payment, cash to brokerage) are matched up and never count as spending. If one shows up under Uncategorized, the transfer pairs in `data/accounts.toml` need a line for it.
 

@@ -118,3 +118,54 @@ def ofx_account(account_number: str, matches: list[dict]) -> str | None:
         if digits.endswith(match["account_ends"]):
             return match["account"]
     return None
+
+
+# ---------------------------------------------------------------- teaching a new layout
+
+DATE_NAME = ("date", "posted", "posting", "transaction")
+DESCRIPTION_NAME = ("description", "payee", "name", "merchant", "details", "memo")
+
+
+def guess_header(rows: list[list[str]], is_date) -> int | None:
+    """The header row of a CSV no layout matches: the first row with two or more named cells whose
+    next row has a date in it. `is_date` tells a date cell (load.parse_date, passed in)."""
+    for index, row in enumerate(rows[:-1]):
+        if sum(1 for value in row if value.strip()) >= 2 and any(is_date(value) for value in rows[index + 1]):
+            return index
+    return None
+
+
+def suggest(header: list[str], rows: list[list[str]], is_date, as_amount) -> dict:
+    """First guesses for the teaching form, from the header and the rows under it: the date column,
+    the amount column or debit and credit columns, which way spending shows, and the description
+    columns. `as_amount` reads a cell as a number or None."""
+    names = [header_key(cell) for cell in header]
+    columns = [name for name in names if name]
+
+    def first(test) -> str | None:
+        return next((name for name in columns if test(name)), None)
+
+    date = first(lambda name: any(word in name for word in DATE_NAME)) or next(
+        (names[i] for i in range(len(names)) if rows and is_date(rows[0][i] if i < len(rows[0]) else "")), None)
+    debit = first(lambda name: name.startswith(("debit", "withdrawal")))
+    credit = first(lambda name: name.startswith(("credit", "deposit")))
+    amount = first(lambda name: name.startswith("amount"))
+    if amount is None and not (debit and credit):
+        amount = next((name for i, name in enumerate(names) if name and name != date and rows and
+                       all(as_amount(row[i] if i < len(row) else "") is not None for row in rows[:5])), None)
+    signs = []
+    if amount in names:
+        position = names.index(amount)
+        signs = [as_amount(row[position]) for row in rows if position < len(row)]
+        signs = [value for value in signs if value]
+    negatives = sum(1 for value in signs if value < 0)
+    descriptions = [name for name in columns if any(word in name for word in DESCRIPTION_NAME)][:1] or \
+        [name for name in columns if name not in (date, amount, debit, credit)][:1]
+    return {
+        "date": date,
+        "mode": "amount" if amount else "debit and credit",
+        "amount": amount, "debit": debit, "credit": credit,
+        # Most rows are spending: if most amounts are negative, spending shows as negative.
+        "spending_is": "negative" if negatives * 2 >= len(signs) else "positive",
+        "description": descriptions,
+    }
