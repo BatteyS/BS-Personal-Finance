@@ -90,6 +90,13 @@ draw_icon() {
   [ static/apple-touch-icon.png -nt icon.py ] || "$UV" run --quiet icon.py static/apple-touch-icon.png || :
 }
 
+# The browser tab's icon. Safari shows only the favicon Streamlit's page names as it loads, never
+# the one the page swaps in later, so icon.py puts the app's icon there in this copy's Streamlit,
+# under an address of its own (icon.py says why). Before the page starts, so its first load has it.
+tab_icon() {
+  "$UV" run --quiet icon.py --favicon || :
+}
+
 # A page starts on the newest version: before starting one, bring this copy up to date, as
 # install.sh does when run again (updates.py: a fast-forward of main, never over a change of yours,
 # and nothing when offline or off main). What it says goes to the log. PF_NO_UPDATE=1 skips it.
@@ -105,6 +112,7 @@ if [ "${1:-}" = --serve-always ]; then
   port=$2
   update_copy
   draw_icon
+  tab_icon
   echo "$$ $port" >"$PIDFILE"
   exec "$UV" run streamlit run dashboard.py --server.port "$port" --server.address localhost \
     --server.headless true
@@ -115,6 +123,7 @@ fi
 if [ "${1:-}" = --serve ]; then
   port=$2
   draw_icon
+  tab_icon
   "$UV" run streamlit run dashboard.py --server.port "$port" --server.address localhost \
     --server.headless true &
   pid=$!

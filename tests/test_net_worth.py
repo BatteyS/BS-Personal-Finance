@@ -7,6 +7,7 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import actions
@@ -367,3 +368,48 @@ def test_the_tab_marks_estimates_in_the_chart_and_the_table(tmp_path, monkeypatc
     chart = next(element for element in worth.get("plotly_chart"))
     assert '"Estimated"' in chart.proto.spec and "circle-open" in chart.proto.spec
     assert worth.table[0].value.set_index("Account").loc["Individual", "As of"] == "est. from Nov 20"
+
+
+def test_each_account_has_its_own_line(tmp_path):
+    path = database(tmp_path, rows=(row("a", "fidelity_cash", "2026-09-10", -40.0, "dining", None, "CAFE"),
+                                    row("b", "fidelity_cash", "2026-10-10", -100.0, "dining", None, "CAFE")),
+                    readings=(("fidelity_cash", "2026-11-02", 1000.0), ("amex", "2026-10-31", -300.0)))
+    worth = queries.net_worth(TODAY, path)
+    assert list(worth["by_account"].columns) == ["fidelity_cash", "amex"]
+    assert worth["by_account"]["fidelity_cash"].tolist() == [1100.0, 1000.0]
+    assert pd.isna(worth["by_account"].loc["2026-09", "amex"]) and worth["by_account"].loc["2026-10", "amex"] == -300.0
+
+
+def test_the_lines_toggle_and_the_axis_fits_the_ones_shown(tmp_path, monkeypatch):
+    """Net worth is the gold line and each account a cream one, named at its end; a pill per line
+    shows or hides it, and the dollar axis fits what is drawn."""
+    import json
+
+    from streamlit.testing.v1 import AppTest
+
+    path = database(tmp_path, readings=(("fidelity_401k", "2026-10-31", 90000.0), ("fidelity_cash", "2026-10-31", 2000.0),
+                                        ("fidelity_401k", "2026-09-30", 88000.0), ("fidelity_cash", "2026-09-30", 1500.0)))
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(config, "RULES_PATH", tmp_path / "rules.csv")
+    monkeypatch.setattr(config, "EXPORTS_DIR", tmp_path / "exports")
+    monkeypatch.setattr(config, "BUDGET_PATH", tmp_path / "budget.toml")
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "dashboard.py"), default_timeout=60).run()
+    assert not page.exception
+
+    def drawn() -> dict:
+        return json.loads(next(iter(page.tabs[1].get("plotly_chart"))).proto.spec)
+
+    lines = page.tabs[1].pills[0]
+    assert lines.value == ["total", "fidelity_cash", "fidelity_401k"]  # every line, to start
+    figure = drawn()
+    colors = {trace["name"]: trace["line"]["color"] for trace in figure["data"]}
+    assert colors == {"Net worth": "#000001", "Cash Management": "#000002", "401(k)": "#000002"}  # gold, cream
+    assert {note["text"] for note in figure["layout"]["annotations"]} == {"Net worth", "Cash Management", "401(k)"}
+    assert figure["layout"]["yaxis"]["autorange"] is True
+
+    lines.set_value(["fidelity_cash"]).run()  # just the small account: the axis fits it alone
+    assert not page.exception
+    assert [trace["name"] for trace in drawn()["data"]] == ["Cash Management"]
+    lines.set_value([]).run()
+    assert not page.tabs[1].get("plotly_chart")
+    assert any("Pick a line" in caption.value for caption in page.tabs[1].caption)

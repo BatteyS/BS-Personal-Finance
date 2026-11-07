@@ -463,7 +463,8 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
     account has a balance for:
 
     "months": those months; "by_kind": a table of each kind's total per month (debts negative);
-    "total": net worth per month; "accounts": one row per account with a balance at the latest
+    "by_account": each account's month-end balance per month, a column per account key that has
+    one in some month, empty (NaN) where it has none; "total": net worth per month; "accounts": one row per account with a balance at the latest
     month end (key, name, kind, balance, as_of, exact, estimated, change, money_in, growth; the
     last three None when they can't be known); "estimated": the months whose net worth includes an
     estimate; "latest" and "previous": those months; "change": net worth's change since the
@@ -471,8 +472,8 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
     balance has it (else None); "you": the rest of the change.
     """
     today = today or date.today()
-    empty = {"months": [], "by_kind": pd.DataFrame(), "total": pd.Series(dtype=float), "accounts": pd.DataFrame(),
-             "estimated": [], "latest": None, "previous": None, "change": None, "market": None, "you": None}
+    empty = {"months": [], "by_kind": pd.DataFrame(), "by_account": pd.DataFrame(), "total": pd.Series(dtype=float),
+             "accounts": pd.DataFrame(), "estimated": [], "latest": None, "previous": None, "change": None, "market": None, "you": None}
     months, balances = month_end_balances(today, db_path)
     if not months:
         return empty
@@ -484,6 +485,9 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
             by_kind.loc[month, config.ACCOUNTS[key]["kind"]] += found["balance"]
     by_kind = by_kind.loc[:, (by_kind != 0).any()].round(2) + 0.0
     total = (by_kind.sum(axis=1).round(2) + 0.0) if not by_kind.empty else pd.Series(0.0, index=months)
+    by_account = pd.DataFrame({key: pd.Series({month: found["balance"] for month, found in by_month.items()},
+                                              dtype=float).reindex(months)
+                               for key, by_month in balances.items() if by_month}, index=months)
     estimated = [month for month in months
                  if any(by_month.get(month, {}).get("estimated") for by_month in balances.values())]
 
@@ -510,7 +514,8 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
     change = cents(total[latest] - total[previous]) if previous else None
     growths = accounts.loc[accounts["kind"].isin(config.INVESTMENT_KINDS), "growth"]
     market = cents(growths.sum()) if change is not None and len(growths) and growths.notna().all() else None
-    return {"months": months, "by_kind": by_kind, "total": total, "accounts": accounts, "estimated": estimated,
+    return {"months": months, "by_kind": by_kind, "by_account": by_account, "total": total, "accounts": accounts,
+            "estimated": estimated,
             "latest": latest,
             "previous": previous, "change": change, "market": market,
             "you": cents(change - market) if market is not None else None}

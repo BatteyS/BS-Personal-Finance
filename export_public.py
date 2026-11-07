@@ -49,7 +49,7 @@ ENGINE = [
     "accounts.example.toml", "budget.example.toml", "formats.example.toml", "rules.example.csv",
     "actions.py", "budget.py", "categorize.py", "config.py", "dashboard.py", "db.py", "export_public.py",
     "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py", "statements.py", "updates.py",
-    "install.sh", "launch.sh", "phone.py", "icon.py",
+    "install.sh", "launch.sh", "install.ps1", "launch.pyw", "phone.py", "icon.py",
     "Dockerfile", ".dockerignore", "docker-compose.yml", "deploy/*",
     "tests/*",
 ]

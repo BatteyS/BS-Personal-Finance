@@ -1,0 +1,125 @@
+# The Windows install, for real, on GitHub's Windows runner, whenever what it's made of changes.
+# install.ps1 runs three ways: from the checkout with -File in Windows PowerShell 5.1, then as the
+# one line runs it (its text into iex) in PowerShell 7, which clones this checkout into
+# %USERPROFILE%\personal-finance and opens the page, then the same in 5.1, which finds it all done.
+# Then what it made is checked: the link under HKCU, both shortcuts and the icon, the page's
+# connection count, --stop, and the link opening the page as a browser would. The runner is an
+# administrator with git already there, so winget, MinGit and a plain user's run are left to a real
+# PC, and so is what a person sees: no console window, the browser's prompt, the notification.
+
+name: windows
+
+on:
+  push:
+    branches: [main]
+    paths: [install.ps1, launch.pyw, icon.py, dashboard.py, updates.py, tests/test_windows.py, .github/workflows/windows.yml]
+  pull_request:
+    paths: [install.ps1, launch.pyw, icon.py, dashboard.py, updates.py, tests/test_windows.py, .github/workflows/windows.yml]
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PF_NO_BROWSER: "1"  # the launcher prints the page's address instead of opening a browser
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # a full history, to clone from
+
+      - name: From the checkout, in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File install.ps1 -NoOpen
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: As the one line runs it, in PowerShell 7, into a fresh copy
+        run: |
+          $env:PF_REPO_URL = "$PWD"
+          pwsh -NoProfile -ExecutionPolicy Bypass -c "Get-Content -Raw install.ps1 | iex"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Again, in Windows PowerShell 5.1, which finds it done
+        shell: powershell
+        run: |
+          $env:PF_REPO_URL = "$PWD"
+          powershell -ExecutionPolicy Bypass -c "Get-Content -Raw install.ps1 | iex"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: The link, the shortcuts and the icon
+        run: |
+          $copy = "$HOME\personal-finance"
+          $program = "$copy\.venv\Scripts\pythonw.exe"
+          $key = 'HKCU:\Software\Classes\bs-personal-finance'
+          $scheme = Get-ItemProperty $key
+          $command = (Get-ItemProperty "$key\shell\open\command").'(default)'
+          $friendly = (Get-ItemProperty "$key\shell\open").FriendlyAppName
+          "scheme: $($scheme.'(default)'), URL Protocol: '$($scheme.'URL Protocol')'"
+          "command: $command"
+          if ($scheme.'(default)' -ne 'URL:Personal Finance' -or $scheme.'URL Protocol' -ne '') { throw 'not a URL protocol' }
+          if ($command -ne "`"$program`" `"$copy\launch.pyw`"") { throw "the command isn't the shortcut's" }
+          if ($friendly -ne 'Personal Finance') { throw 'no FriendlyAppName' }
+          Add-Type -Namespace Shell -Name Assoc -MemberDefinition '[DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int AssocQueryString(int flags, int str, string assoc, string extra, System.Text.StringBuilder outBuffer, ref int size);'
+          foreach ($what in @{ 1 = 'command'; 4 = 'name a browser shows' }.GetEnumerator()) {
+            $buffer = New-Object System.Text.StringBuilder 1024; $size = 1024
+            [void][Shell.Assoc]::AssocQueryString(0x1000, $what.Key, 'bs-personal-finance', 'open', $buffer, [ref]$size)
+            "Windows's answer for the link's $($what.Value): $buffer"
+          }
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($link in "$([Environment]::GetFolderPath('Programs'))\Personal Finance.lnk", "$([Environment]::GetFolderPath('Desktop'))\Personal Finance.lnk") {
+            if (-not (Test-Path $link)) { throw "no $link" }
+            $shortcut = $shell.CreateShortcut($link)
+            "$link -> $($shortcut.TargetPath) $($shortcut.Arguments), in $($shortcut.WorkingDirectory), icon $($shortcut.IconLocation)"
+            if ($shortcut.TargetPath -ne $program -or $shortcut.Arguments -ne "`"$copy\launch.pyw`"") { throw "$link runs something else" }
+          }
+          $icon = "$env:LOCALAPPDATA\Personal Finance\Personal Finance.ico"
+          if (-not (Test-Path $icon)) { throw 'no icon' }
+          "icon: $((Get-Item $icon).Length) bytes"
+
+      - name: The page answers and counts an open tab, and --stop stops it
+        run: |
+          $copy = "$HOME\personal-finance"
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8501/_stcore/health).Content
+          $tab = New-Object System.Net.Sockets.TcpClient('127.0.0.1', 8501)
+          $count = & "$copy\.venv\Scripts\python.exe" -c "import importlib.machinery as m, importlib.util as u; l = m.SourceFileLoader('launcher', r'$copy\launch.pyw'); launcher = u.module_from_spec(u.spec_from_loader('launcher', l)); l.exec_module(launcher); print(launcher.connections(8501))"
+          "connections to the page with one tab open: $count"
+          $tab.Close()
+          if ([int]$count -lt 1) { throw 'the open tab went uncounted' }
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(python|pythonw|uv|streamlit|conhost)\.exe$' } | Format-Table ProcessId, ParentProcessId, Name, CommandLine -AutoSize | Out-String -Width 300
+          & "$copy\.venv\Scripts\python.exe" "$copy\launch.pyw" --stop
+          Start-Sleep -Seconds 3
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 http://127.0.0.1:8501/_stcore/health | Out-Null; throw 'still answering' } catch { if ("$_" -eq 'still answering') { throw } }
+          if (Test-Path "$copy\.page.pid") { throw 'the record is still there' }
+          $left = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'streamlit' }
+          if ($left) { $left | Format-Table ProcessId, CommandLine -AutoSize | Out-String -Width 300; throw 'part of the page outlived --stop' }
+
+      - name: The link opens the page, as a browser's Launch button would
+        run: |
+          Start-Process 'bs-personal-finance://launch'
+          $up = $false
+          foreach ($second in 1..180) {
+            try { if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8501/_stcore/health).StatusCode -eq 200) { $up = $true; break } } catch { }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $up) { throw "the link didn't start the page" }
+          "the page answered $second seconds after the link was opened"
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(python|pythonw|uv|streamlit)\.exe$' } | Format-Table ProcessId, ParentProcessId, Name, CommandLine -AutoSize | Out-String -Width 300
+          & "$HOME\personal-finance\.venv\Scripts\python.exe" "$HOME\personal-finance\launch.pyw" --stop
+
+      - name: The tests that need no Windows, on Windows
+        run: |
+          $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
+          if (-not $uv) { $uv = "$HOME\.local\bin\uv.exe" }
+          & $uv run pytest tests/test_windows.py -v
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: What the installer and the page printed
+        if: always()
+        run: |
+          foreach ($log in "$env:LOCALAPPDATA\Personal Finance\Personal Finance install.log", "$env:LOCALAPPDATA\Personal Finance\Personal Finance.log") {
+            "===== $log"
+            if (Test-Path $log) { Get-Content $log -Tail 120 }
+          }

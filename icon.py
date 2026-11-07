@@ -4,15 +4,31 @@ seanbattey.com's: its background, its gold and its text.
 
     uv run icon.py static/apple-touch-icon.png         # 180 px, for a phone's home screen
     uv run icon.py --iconset /tmp/icon.iconset         # every size macOS wants, for the Desktop app
+    uv run icon.py --ico "Personal Finance.ico"        # every size Windows wants, for its shortcuts
+    uv run icon.py --favicon                           # the browser tab's, in place of Streamlit's
 
 The phone's icon is served from static/ (Streamlit's static folder, gitignored); launch.sh draws it
-before it starts the page. install.sh turns the iconset into the Desktop app's icon with iconutil.
+before it starts the page. install.sh turns the iconset into the Desktop app's icon with iconutil,
+and install.ps1 gives the .ico to the Start menu's and the Desktop's shortcuts.
+
+The browser tab: Streamlit's page names its own favicon.png, Streamlit's logo, and page_icon only
+swaps that link's address by script once the page has loaded. Chrome follows the swap; Safari never
+does, and shows the favicon.png the page named as it loaded. Streamlit also serves that file as
+immutable for a year, so a browser that has it never asks again. So --favicon writes the app's icon
+over favicon.png in the installed Streamlit, and points the page's link at favicon.png?v=<the
+icon's own hash>: the page is served fresh each time, so Safari sees a new address and fetches the
+new icon, and a changed icon gets a new address again. launch.sh does it before it starts a page,
+the Dockerfile when it builds, and the page itself once as it starts, for a page started some
+other way.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import math
+import re
 import struct
 import sys
 import zlib
@@ -22,6 +38,10 @@ BACKGROUND = (23, 18, 13)  # #17120d, the site's background
 RING = (242, 193, 78)      # #f2c14e, its gold
 SLICE = (242, 233, 216)    # #f2e9d8, its cream text
 ICONSET_SIZES = [16, 32, 64, 128, 256, 512, 1024]
+ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+FAVICON_SIZE = 64  # sharp in a tab on a Retina screen
+# The tab icon's link in Streamlit's own page, with or without a version already on it.
+FAVICON_LINK = re.compile(r'(<link rel="shortcut icon" href=")\./favicon\.png[^"]*(")')
 
 
 def inside_rounded_square(x: float, y: float, size: float, radius: float) -> bool:
@@ -80,19 +100,74 @@ def write_iconset(folder: Path) -> None:
         (folder / f"icon_{size}x{size}@2x.png").write_bytes(draw(size * 2))
 
 
+def ico(sizes: list[int] = ICO_SIZES) -> bytes:
+    """A Windows .ico holding the icon at each size, each one a PNG, which Windows reads from Vista
+    on: a header, one 16-byte entry per image (a width or height of 256 is written as 0), then the
+    images."""
+    images = [draw(size) for size in sizes]
+    header = struct.pack("<HHH", 0, 1, len(images))  # reserved, 1 for an icon, how many
+    offset = len(header) + 16 * len(images)
+    entries = b""
+    for size, image in zip(sizes, images):
+        entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(image), offset)
+        offset += len(image)
+    return header + entries + b"".join(images)
+
+
+def streamlit_static() -> Path | None:
+    """The folder the installed Streamlit serves its own page from; None without Streamlit."""
+    spec = importlib.util.find_spec("streamlit")
+    if spec is None or not spec.origin:
+        return None
+    return Path(spec.origin).parent / "static"
+
+
+def install_favicon(static: Path | None = None) -> bool:
+    """Make the browser tab show the app's icon: write it over favicon.png in Streamlit's own
+    static folder (or `static`), and point its page's link at favicon.png?v=<the icon's hash>, each
+    unless it's so already. Returns whether anything changed. A Streamlit that can't be written to
+    (a container's, owned by root) raises OSError: the Dockerfile does it while it builds instead."""
+    static = static or streamlit_static()
+    if static is None or not static.is_dir():
+        return False
+    image = draw(FAVICON_SIZE)
+    changed = False
+    favicon = static / "favicon.png"
+    if not favicon.exists() or favicon.read_bytes() != image:
+        favicon.write_bytes(image)
+        changed = True
+    page = static / "index.html"
+    if page.exists():
+        html = page.read_text(encoding="utf-8")
+        version = hashlib.sha256(image).hexdigest()[:12]
+        linked = FAVICON_LINK.sub(lambda found: f"{found.group(1)}./favicon.png?v={version}{found.group(2)}", html)
+        if linked != html:
+            page.write_text(linked, encoding="utf-8")
+            changed = True
+    return changed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Draw the app's icon.")
     parser.add_argument("path", nargs="?", type=Path, help="a PNG to write, 180 px unless --size says")
     parser.add_argument("--size", type=int, default=180)
     parser.add_argument("--iconset", type=Path, help="a folder to fill with the sizes macOS wants")
+    parser.add_argument("--ico", type=Path, help="a .ico to write, with the sizes Windows wants")
+    parser.add_argument("--favicon", action="store_true",
+                        help="make the browser tab show the app's icon, in the installed Streamlit")
     args = parser.parse_args(argv)
+    if args.favicon:
+        install_favicon()
     if args.iconset:
         write_iconset(args.iconset)
+    if args.ico:
+        args.ico.parent.mkdir(parents=True, exist_ok=True)
+        args.ico.write_bytes(ico())
     if args.path:
         args.path.parent.mkdir(parents=True, exist_ok=True)
         args.path.write_bytes(draw(args.size))
-    if not (args.iconset or args.path):
-        parser.error("give a PNG to write, or --iconset FOLDER")
+    if not (args.iconset or args.ico or args.path or args.favicon):
+        parser.error("give a PNG to write, --iconset FOLDER, --ico FILE or --favicon")
     return 0
 
 

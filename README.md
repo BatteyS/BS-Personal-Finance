@@ -24,6 +24,18 @@ It installs what's missing, all of it into your own home folder: Apple's Command
 
 From then on, double-click **Personal Finance** on your Desktop whenever you want the page. It opens in your browser with no Terminal window, and stops by itself twenty minutes after you close its last tab. It also answers the link `bs-personal-finance://launch`, which the **Launch** button on [seanbattey.com](https://seanbattey.com/apps/) uses. From a terminal, `sh launch.sh` does the same, and `sh launch.sh --stop` stops it.
 
+### On Windows
+
+Open PowerShell (in the Start menu, type PowerShell, then press Enter), paste this line, and press Enter:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/BatteyS/BS-Personal-Finance/main/install.ps1 | iex"
+```
+
+It installs what's missing, all of it for you alone and with no administrator rights: git (Git for Windows from winget, or MinGit where winget can't), [uv](https://docs.astral.sh/uv/), your copy in `%USERPROFILE%\personal-finance` with its packages, and **Personal Finance** in the Start menu and on your Desktop. When it finishes, the page is open in your browser. It needs Windows 10 or 11, and running it again is safe: what's done is skipped. What it ran is in `%LOCALAPPDATA%\Personal Finance\Personal Finance install.log`.
+
+From then on, click **Personal Finance** in the Start menu or on your Desktop whenever you want the page. It opens in your browser with no window of its own, and stops by itself twenty minutes after you close its last tab. It also answers the link `bs-personal-finance://launch`, which the **Launch** button on [seanbattey.com](https://seanbattey.com/apps/) uses. From a terminal in your copy, `.venv\Scripts\python.exe launch.pyw` does the same, and `.venv\Scripts\python.exe launch.pyw --stop` stops it. Phone access (below) is set up from a Mac for now.
+
 ### On Linux, or by hand
 
 With git and [uv](https://docs.astral.sh/uv/):
@@ -36,7 +48,7 @@ uv run streamlit run dashboard.py --server.address localhost
 
 The page opens at http://localhost:8501.
 
-Either way, until you set it up, the page runs on example accounts and an example budget, and says so.
+Whichever way you install it, until you set it up, the page runs on example accounts and an example budget, and says so.
 
 ### Set it up
 
@@ -88,6 +100,12 @@ For a page already running, the sidebar says which version you have, and when a 
 cd ~/personal-finance && sh install.sh
 ```
 
+or on Windows, from PowerShell:
+
+```powershell
+cd ~\personal-finance; powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
 An update never writes over a change of yours: a copy whose files you've edited is left as it is, and says so. From a terminal, `uv run updates.py` says whether there's a newer version, and `uv run updates.py update` brings it in.
 
 ## Each month
@@ -103,7 +121,7 @@ An update never writes over a change of yours: a copy whose files you've edited 
 
 **Finance mode.** The **Personal | Finance** toggle at the top right reads the same data as statements, each beside the period before: a balance sheet as of a month, quarter or year end (assets, liabilities and net worth, each line opening to its accounts); an income statement for the period on a cash basis (take-home pay, employer money and dividends in, spending by category out, net of refunds); and a cash flow that reconciles the two. The cash flow's last line is zero when every transaction is categorized and every transfer matched, and otherwise the size of what's missing: an unmatched transfer, an export you haven't imported, a typed balance the transactions disagree with. The page remembers the mode in its address (`?mode=finance`), so a bookmark or the phone's home-screen icon reopens where you left it. Only complete periods are offered; **Year to date** is how the current year reads.
 
-**Net worth.** The second tab shows what every account held at the end of each month, stacked by kind with debts below zero, and splits each month's change into what the market did and what you did. Balances come from Bank of America's export (its running balance), from the Fidelity positions download (every Fidelity account's value on one day), and from **Record a balance** on the tab for anything else: a card's statement balance, a loan, an HSA held elsewhere. A card or loan is recorded as what you owe. Cash, cards and loans are brought to each month end by their transactions, so one typed balance carries a card from then on; an investment account shows a real reading taken within a week of the month end, or its last reading with the date it was taken.
+**Net worth.** The second tab shows what every account held at the end of each month, as a line each beside net worth's gold line; a pill per line shows or hides it, and the axis fits the lines shown. It splits each month's change into what the market did and what you did. Balances come from Bank of America's export (its running balance), from the Fidelity positions download (every Fidelity account's value on one day), and from **Record a balance** on the tab for anything else: a card's statement balance, a loan, an HSA held elsewhere. A card or loan is recorded as what you owe. Cash, cards and loans are brought to each month end by their transactions, so one typed balance carries a card from then on; an investment account shows a real reading taken within a week of the month end, or its last reading with the date it was taken.
 
 To fill in the months before your first balances, import activity history going back as far as you like (Fidelity's History for All accounts, and Bank of America's and Amex's activity), alongside a positions download or after it. Cash and cards are worked back exactly from their balances. An investment account's earlier months are estimated, as its first reading less the money put in since, as if the market stood still. They're labeled "est. from" that reading's date and shaded "Estimated" on the chart, and growth is never worked out from them. Each account goes back only as far as its bank's transactions do.
 

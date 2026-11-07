@@ -6,9 +6,11 @@ out what queries.py returns; every change goes through actions.py. See docs/spec
     uv run streamlit run dashboard.py
 """
 
+import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -30,22 +32,19 @@ import queries
 import statements
 import updates
 
-# Categorical slots 1-3 from the reference palette (dataviz skill). Text never wears these colors;
-# the Streamlit theme supplies surfaces and ink in light and dark mode.
-INCOME, SPENDING, BROKERAGE = "#2a78d6", "#eb6834", "#1baf7a"
-NEUTRAL = "#888780"  # zero line and grid: mid-gray reads on both surfaces
-# One fixed color per spending category, so a category keeps its color from month to month. The
-# first eight are the reference palette's categorical hues; transit, health, going out and hobbies take four more, and
-# uncategorized is the neutral gray. Every slice is labeled, so no category is told by color alone.
-CATEGORY_COLORS = {
-    "housing": "#2a78d6", "dining": "#eb6834", "groceries": "#1baf7a", "gas": "#eda100",
-    "shopping": "#e87ba4", "utilities": "#008300", "subscriptions": "#6250d6", "travel": "#e34948",
-    "transit": "#9c6b30", "health": "#3fa7b5", "going out": "#b5338a",
-    "hobbies": "#5b7a1e", "uncategorized": NEUTRAL,
-}
-# One fixed color per account kind on the Net worth chart, each area labeled in the legend.
-KIND_COLORS = {"cash": INCOME, "brokerage": BROKERAGE, "retirement": "#6250d6", "hsa": "#3fa7b5",
-               "credit": SPENDING, "loan": "#e34948"}
+# The charts wear the page's own three colors: gold, cream and its brown. Each color here is a
+# placeholder that Streamlit swaps, in the browser, for the theme showing (.streamlit/config.toml:
+# chartCategoricalColors for #000001-#000010, chartSequentialColors for #000011-#000020), so one
+# figure reads in light and dark mode alike. Text never wears them: labels, values and the hover
+# stay in the page's ink.
+GOLD_MARK = "#000001"  # the highlight: money into brokerage, the net worth line
+CREAM_MARK = "#000002"  # every other line, and income
+LIFT = "#000003"  # a step off the background: money taken back out of brokerage
+TAN = "#000004"  # spending, and the zero line
+SURFACE = "#000005"  # the background itself: the gaps between slices
+GRID = "#000006"  # gridlines, and the band behind estimated months
+# The spending ring's ramp: the largest slice the darkest yellow, the smallest the lightest off-white.
+RAMP = [f"#{step:06d}" for step in range(11, 21)]
 KIND_LABELS = {"cash": "Cash", "brokerage": "Brokerage", "retirement": "Retirement", "hsa": "HSA",
                "credit": "Credit cards", "loan": "Loans"}
 CHART_CONFIG = {"displayModeBar": False}
@@ -78,15 +77,21 @@ LOGO = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='10 -12 86 208' width='
         "<g fill='none' stroke-width='20'><path d='M22 28v156h28a34 34 0 0 0 0-68H22' stroke-linejoin='miter'/>"
         "<path d='M76.3 18.4A28 28 0 1 0 50 56a30 30 0 0 1 0 60' stroke-linecap='round' stroke-linejoin='round'/>"
         "</g></svg>") % theme_colors("primaryColor")
-# A click on the monogram opens the site, as it does in each of the site's apps. Streamlit opens
-# the link in a new tab with rel="noreferrer", so the page's address never reaches the site.
+# A click on the monogram takes you home to the site, in place of the page (see the head script below).
 SITE = "https://seanbattey.com"
 
 
 @st.cache_resource(show_spinner=False)
 def tab_icon() -> bytes:
-    """The app's icon (icon.py) for the browser tab, drawn once while the page runs."""
-    return icon.draw(64)
+    """The app's icon (icon.py) for the browser tab, drawn once while the page runs. Safari shows
+    only the favicon Streamlit's page names as it loads, so that gets the icon too
+    (icon.install_favicon; launch.sh has usually done it already). A Streamlit that can't be
+    written to keeps its own."""
+    try:
+        icon.install_favicon()
+    except OSError:
+        pass
+    return icon.draw(icon.FAVICON_SIZE)
 
 
 st.set_page_config(page_title="Finance", page_icon=tab_icon(), layout="wide")
@@ -98,9 +103,18 @@ if reason:
     st.stop()
 st.logo(LOGO, size="large", link=SITE)  # the top-left corner, where the site's header has it
 # The home-screen icon and full-screen mode, for "Add to Home Screen" on a phone. Streamlit owns
-# the page's <head>, so a zero-height component adds the tags to it.
+# the page's <head>, so a zero-height component adds the tags to it. It also makes the monogram
+# open the site in this tab, in place of the page: Streamlit's logo link opens a new one. The link
+# keeps Streamlit's rel="noreferrer", so the site still never learns the page's address. Each run
+# swaps in its own click handler, so one stays however often this frame is drawn again.
 components.html("""<script>
 const page = window.parent.document;
+page.removeEventListener("click", page.logoInThisTab, true);
+page.logoInThisTab = (event) => {
+  const link = event.target.closest && event.target.closest('a[href^=%(site)s]');
+  if (link) link.target = "_self";
+};
+page.addEventListener("click", page.logoInThisTab, true);
 for (const [tag, attrs] of [
     ["link", {rel: "apple-touch-icon", href: "./app/static/apple-touch-icon.png"}],
     ["meta", {name: "apple-mobile-web-app-capable", content: "yes"}],
@@ -113,7 +127,7 @@ for (const [tag, attrs] of [
   for (const [name, value] of Object.entries(attrs)) element.setAttribute(name, value);
   page.head.appendChild(element);
 }
-</script>""", height=0)
+</script>""" % {"site": json.dumps(SITE)}, height=0)
 # Streamlit leaves a tall empty band above the page; a laptop screen needs that room for the data.
 # Its button rows scroll sideways when full, hiding the last categories; wrap them instead.
 # Finance mode's statements right-align their figures, as statements do; a static table writes its
@@ -203,11 +217,11 @@ def update_panel() -> None:
 
 def how_started() -> str:
     """How this page was started: "phone" (phone access's LaunchAgent keeps it up), "launcher" (the
-    Desktop app or launch.sh), or "terminal" (streamlit run, by hand)."""
+    Desktop app or launch.sh, or on Windows launch.pyw), or "terminal" (streamlit run, by hand)."""
     try:
         if subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{AGENT}"], capture_output=True).returncode == 0:
             return "phone"
-    except OSError:  # no launchctl: not a Mac
+    except (OSError, AttributeError):  # no launchctl, or Windows, which has no os.getuid: not a Mac
         pass
     return "launcher" if (ROOT / ".page.pid").exists() else "terminal"
 
@@ -219,7 +233,16 @@ def restart_page() -> str:
     how = how_started()
     if how == "terminal":
         return how
-    if how == "launcher":
+    if how == "launcher" and os.name == "nt":
+        # launch.pyw on Windows: its watcher ends when this page does, so a fresh launcher is all it
+        # takes, under the Python with no window, once this page has let go of its port.
+        (ROOT / ".page.pid").unlink(missing_ok=True)
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        subprocess.Popen([str(pythonw if pythonw.exists() else sys.executable), str(ROOT / "launch.pyw"), "--after", "2"],
+                         env={**os.environ, "PF_NO_BROWSER": "1"}, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    elif how == "launcher":
         try:
             page = (ROOT / ".page.pid").read_text().split()[0]
             watcher = subprocess.run(["ps", "-o", "ppid=", "-p", page], capture_output=True, text=True).stdout.strip()
@@ -386,16 +409,18 @@ def teach_panel() -> None:
             (teach_ofx if result["unknown"] == "ofx" else teach_csv)(result)
 
 
-def sparkline(frame) -> go.Figure:
-    """Brokerage inflow by month this year: a 2px line with markers and exact values on hover."""
-    figure = go.Figure(go.Scatter(
-        x=[queries.month_label(month) for month in frame["month"]], y=frame["inflow"], mode="lines+markers",
-        line={"color": BROKERAGE, "width": 2}, marker={"size": 8},
+def inflow_bars(frame) -> go.Figure:
+    """Brokerage inflow by month this year: a gold bar for money put in, a bar a step off the
+    background for money taken back out, exact values on hover."""
+    figure = go.Figure(go.Bar(
+        x=[queries.month_label(month) for month in frame["month"]], y=frame["inflow"],
+        marker={"color": [GOLD_MARK if value >= 0 else LIFT for value in frame["inflow"]]},
         hovertemplate="%{x}: %{y:$,.0f}<extra></extra>",
     ))
     figure.update_xaxes(visible=False)
-    figure.update_yaxes(visible=False, zeroline=True, zerolinecolor=NEUTRAL)
-    figure.update_layout(height=110, margin={"l": 0, "r": 0, "t": 8, "b": 8}, showlegend=False)
+    figure.update_yaxes(visible=False)
+    figure.update_layout(height=110, margin={"l": 0, "r": 0, "t": 8, "b": 8}, showlegend=False, bargap=0.25,
+                         barcornerradius=4)
     return figure
 
 
@@ -411,13 +436,23 @@ def slice_order(categories: list[str]) -> list[str]:
     return order
 
 
+def ramp_colors(categories: list[str], amounts) -> list[str]:
+    """Each category's color by its size, in `categories` order: the largest takes the ramp's first
+    step (darkest yellow), the smallest its last (lightest off-white), the rest spread between."""
+    by_size = sorted(categories, key=lambda name: -amounts[name])
+    rank = {name: place for place, name in enumerate(by_size)}
+    last = max(len(by_size) - 1, 1)
+    return [RAMP[round(rank[name] * (len(RAMP) - 1) / last)] for name in categories]
+
+
 def spending_pie(spending, categories: list[str]) -> go.Figure:
-    """The month's spending as a ring, one fixed-color slice per category in `categories` order, each
-    labeled outside with its name and amount, and the month's total in the middle."""
+    """The month's spending as a ring, a slice per category in `categories` order, colored by size
+    from darkest yellow to lightest off-white with a gap of background between slices, each labeled
+    outside with its name and amount, and the month's total in the middle."""
     amounts = spending.set_index("category")["amount"]
     figure = go.Figure(go.Pie(
         labels=[name.capitalize() for name in categories], values=[amounts[name] for name in categories],
-        marker={"colors": [CATEGORY_COLORS.get(name, NEUTRAL) for name in categories]},
+        marker={"colors": ramp_colors(categories, amounts), "line": {"color": SURFACE, "width": 2}},
         hole=0.6, sort=False, direction="clockwise", rotation=0, automargin=True,
         textposition="outside", texttemplate="<b>%{label}</b><br>%{value:$,.0f}",
         hovertemplate="%{label}: %{value:$,.0f} (%{percent})<extra></extra>",
@@ -429,14 +464,16 @@ def spending_pie(spending, categories: list[str]) -> go.Figure:
 
 
 def trend_chart(frame) -> go.Figure:
-    """Twelve months of income, spending and brokerage inflow, as grouped bars on one dollar axis."""
+    """Twelve months of income (cream), spending (tan) and brokerage inflow (gold, or a step off the
+    background when money came back out), as grouped bars on one dollar axis."""
     labels = [f"{queries.month_label(month)[:3]} {month[2:4]}" for month in frame["month"]]
     figure = go.Figure()
-    for name, column, color in (("Income", "income", INCOME), ("Spending", "spending", SPENDING),
-                                ("Brokerage inflow", "brokerage", BROKERAGE)):
+    inflow = [GOLD_MARK if value >= 0 else LIFT for value in frame["brokerage"]]
+    for name, column, color in (("Income", "income", CREAM_MARK), ("Spending", "spending", TAN),
+                                ("Brokerage inflow", "brokerage", inflow)):
         figure.add_bar(name=name, x=labels, y=frame[column], marker={"color": color},
                        hovertemplate=f"{name}: %{{y:$,.0f}}<extra></extra>")
-    figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor="rgba(136,135,128,0.25)", zerolinecolor=NEUTRAL)
+    figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor=GRID, zerolinecolor=TAN)
     figure.update_layout(barmode="group", bargap=0.3, bargroupgap=0.08, barcornerradius=4, height=300,
                          margin={"l": 0, "r": 0, "t": 30, "b": 0}, hovermode="x unified",
                          legend={"orientation": "h", "y": 1.12, "x": 0})
@@ -516,7 +553,7 @@ def month_page() -> None:
         st.subheader("Brokerage")
         total, by_month = queries.brokerage_year_to_date(month, inflow_by_month=inflow_by_month)
         st.metric("Inflow, year to date", queries.signed_money(total))
-        st.plotly_chart(sparkline(by_month), width="stretch", config=CHART_CONFIG, key="sparkline")
+        st.plotly_chart(inflow_bars(by_month), width="stretch", config=CHART_CONFIG, key="inflow")
     with months_chart:
         st.subheader("Twelve months")
         st.plotly_chart(trend_chart(queries.trend(month, inflow_by_month=inflow_by_month, totals=totals)),
@@ -549,12 +586,6 @@ def static_table(frame: pd.DataFrame, headers: dict[str, str]) -> None:
 DASH = "—"  # a figure the tab can't know yet
 
 
-def translucent(color: str, alpha: float = 0.45) -> str:
-    """A hex color as rgba at the given opacity, for the areas under a line."""
-    red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
-    return f"rgba({red},{green},{blue},{alpha})"
-
-
 def estimate_runs(months: list[str], estimated: list[str]) -> list[tuple[int, int]]:
     """The positions (first, last) of each run of consecutive months that include an estimate."""
     runs: list[tuple[int, int]] = []
@@ -568,32 +599,60 @@ def estimate_runs(months: list[str], estimated: list[str]) -> list[tuple[int, in
     return runs
 
 
-def net_worth_chart(by_kind: pd.DataFrame, total: pd.Series, estimated: list[str] | None = None) -> go.Figure:
-    """Net worth over the months: one stacked area per kind, assets above zero and debts below, and
-    the net worth line on top. One fixed color per kind, a legend, exact values on hover. Months
-    whose net worth includes an estimate sit in a shaded band labeled Estimated, with hollow
-    net worth markers."""
+def spread_labels(values: list[float], gap: float) -> list[float]:
+    """Heights for labels at `values`, nudged apart so no two sit closer than `gap`, in the
+    values' own order."""
+    order = sorted(range(len(values)), key=lambda index: values[index])
+    placed = list(values)
+    for before, index in zip(order, order[1:]):
+        placed[index] = max(placed[index], placed[before] + gap)
+    return placed
+
+
+def net_worth_chart(by_account: pd.DataFrame, total: pd.Series, shown: list[str],
+                    estimated: list[str] | None = None) -> go.Figure:
+    """Net worth and each account over the months, as lines: net worth in gold, the accounts in
+    cream, each named at its last point. Only the lines in `shown` are drawn ("total" for net
+    worth, else account keys), and the dollar axis fits what is drawn. Months whose net worth
+    includes an estimate sit in a shaded band labeled Estimated, with hollow net worth markers."""
     estimated = estimated or []
-    labels = [f"{queries.month_label(month)[:3]} {month[2:4]}" for month in by_kind.index]
+    months = list(total.index)
+    labels = [f"{queries.month_label(month)[:3]} {month[2:4]}" for month in months]
     figure = go.Figure()
-    for first, last in estimate_runs(list(by_kind.index), estimated):
-        figure.add_vrect(x0=first - 0.5, x1=last + 0.5, fillcolor=NEUTRAL, opacity=0.12, line_width=0, layer="below",
-                         annotation_text="Estimated", annotation_position="top left",
-                         annotation_font={"color": NEUTRAL, "size": 11})
-    for kind in [kind for kind in KIND_COLORS if kind in by_kind.columns]:
-        figure.add_scatter(name=KIND_LABELS[kind], x=labels, y=by_kind[kind], mode="lines+markers",
-                           stackgroup="debts" if kind in config.DEBT_KINDS else "assets",
-                           line={"width": 1, "color": KIND_COLORS[kind]}, marker={"size": 5},
-                           fillcolor=translucent(KIND_COLORS[kind]),
-                           hovertemplate=f"{KIND_LABELS[kind]}: %{{y:$,.0f}}<extra></extra>")
-    notes = [" (includes estimates)" if month in estimated else "" for month in by_kind.index]
-    figure.add_scatter(name="Net worth", x=labels, y=total.values, mode="lines+markers", customdata=notes,
-                       line={"color": NEUTRAL, "width": 3},
-                       marker={"size": 9, "symbol": ["circle-open" if note else "circle" for note in notes]},
-                       hovertemplate="Net worth: %{y:$,.0f}%{customdata}<extra></extra>")
-    figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor="rgba(136,135,128,0.25)", zerolinecolor=NEUTRAL)
-    figure.update_layout(height=320, margin={"l": 0, "r": 0, "t": 30, "b": 0}, hovermode="x unified",
-                         legend={"orientation": "h", "y": 1.12, "x": 0})
+    for first, last in estimate_runs(months, estimated):
+        figure.add_vrect(x0=first - 0.5, x1=last + 0.5, fillcolor=GRID, line_width=0, layer="below",
+                         annotation_text="Estimated", annotation_position="top left", annotation_font={"size": 11})
+    lines = [(key, config.ACCOUNTS[key]["name"], by_account[key], CREAM_MARK, 2)
+             for key in by_account.columns if key in shown]
+    if "total" in shown:
+        lines.append(("total", "Net worth", total, GOLD_MARK, 3))
+    ends = []
+    for key, name, series, color, width in lines:
+        hollow = key == "total"
+        known_at = series.notna().tolist()
+        # An account's line has no markers, except a point with no known month either side, which
+        # a line alone can't draw.
+        alone = [here and not (index and known_at[index - 1]) and not (index + 1 < len(months) and known_at[index + 1])
+                 for index, here in enumerate(known_at)]
+        figure.add_scatter(
+            name=name, x=labels, y=series.values, mode="lines+markers", line={"color": color, "width": width},
+            marker={"size": 8 if hollow else [8 if point else 0 for point in alone], "color": color,
+                    "symbol": ["circle-open" if month in estimated else "circle" for month in months]},
+            customdata=[" (includes estimates)" if hollow and month in estimated else "" for month in months],
+            hovertemplate=f"{name}: %{{y:$,.0f}}%{{customdata}}<extra></extra>")
+        known = series.dropna()
+        if len(known):
+            ends.append((name, labels[months.index(known.index[-1])], float(known.iloc[-1])))
+    if ends:
+        heights = [value for _, _, value in ends]
+        span = (max(heights) - min(heights)) or abs(heights[0]) or 1.0
+        for (name, x, _), y in zip(ends, spread_labels(heights, span * 0.06)):
+            figure.add_annotation(x=x, y=y, text=name, showarrow=False, xanchor="left", xshift=8,
+                                  font={"size": 12})
+    figure.update_xaxes(showgrid=False)
+    figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor=GRID, zerolinecolor=TAN, autorange=True)
+    figure.update_layout(height=360, margin={"l": 0, "r": 120, "t": 30, "b": 0}, hovermode="x unified",
+                         showlegend=False)
     return figure
 
 
@@ -661,8 +720,8 @@ def record_balance_form() -> None:
 
 
 def net_worth_page() -> None:
-    """The Net worth tab: the latest month end's net worth and how it changed, the trajectory by
-    kind, each account's balance, and the form for typing one."""
+    """The Net worth tab: the latest month end's net worth and how it changed, the lines over the
+    months with a pill to show or hide each, each account's balance, and the form for typing one."""
     worth = queries.net_worth()
     if not worth["months"]:
         st.info("No balances yet. Import a Fidelity positions download or a Bank of America export from the "
@@ -680,9 +739,15 @@ def net_worth_page() -> None:
                        help="The change that wasn't the market: money saved, spent and paid down.")
             market.metric("Market", queries.signed_money(worth["market"]),
                           help="The investment accounts' growth, beyond what was put into them.")
-        st.plotly_chart(net_worth_chart(worth["by_kind"], worth["total"], worth["estimated"]), width="stretch",
-                        config=CHART_CONFIG,
-                        key="net_worth")
+        lines = ["total", *worth["by_account"].columns]
+        shown = st.pills("Lines", lines, selection_mode="multi", default=lines, key="net_worth_lines",
+                         format_func=lambda key: "Net worth" if key == "total" else config.ACCOUNTS[key]["name"],
+                         label_visibility="collapsed")
+        if shown:
+            st.plotly_chart(net_worth_chart(worth["by_account"], worth["total"], shown, worth["estimated"]),
+                            width="stretch", config=CHART_CONFIG, key="net_worth")
+        else:
+            st.caption("Pick a line above to draw it.")
     table, form = st.columns([2, 1], gap="large")
     with table:
         if worth["months"]:

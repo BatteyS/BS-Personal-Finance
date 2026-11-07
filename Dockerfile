@@ -23,10 +23,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-dev
 
-# Then the code (see .dockerignore for what stays out), and the phone's home-screen icon, which
-# launch.sh draws on a Mac and nothing would draw here.
+# Then the code (see .dockerignore for what stays out), the phone's home-screen icon, which
+# launch.sh draws on a Mac and nothing would draw here, and the browser tab's icon in Streamlit's
+# own page, which only root can write (icon.py says why Safari needs it).
 COPY --chown=finance:finance . .
-RUN /app/.venv/bin/python icon.py static/apple-touch-icon.png && chown -R finance:finance static
+RUN /app/.venv/bin/python icon.py static/apple-touch-icon.png --favicon && chown -R finance:finance static
 
 USER finance
 EXPOSE 8501

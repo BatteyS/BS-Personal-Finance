@@ -17,6 +17,15 @@ toolbarMode = "minimal"
 # fonts, and pill-shaped buttons. The site is dark only; light mode is the same palette on cream
 # paper, its gold deepened so it still reads as text. The page follows the computer's setting.
 # dashboard.py reads each mode's textColor and primaryColor for what a theme can't style.
+#
+# The charts wear the same three colors: gold, cream and the page's brown. Streamlit swaps the
+# placeholder colors a chart is drawn in for these, in the browser, by the theme showing:
+# #000001-#000010 for chartCategoricalColors, #000011-#000020 for chartSequentialColors. The
+# categorical slots are dashboard.py's chart roles, in order: the highlight (gold), the other
+# lines and income (cream; the ink's quieter brown on cream paper), a step off the background
+# (money taken out of brokerage), spending (tan), the background itself (the gaps between slices),
+# the grid and the band behind estimated months; the last four repeat the first. The sequential ramp colors the spending ring
+# by size, the largest the darkest yellow and the smallest the lightest off-white.
 [theme]
 font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
 codeFont = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
@@ -31,6 +40,10 @@ textColor = "#f2e9d8"
 primaryColor = "#f2c14e"
 linkColor = "#f2c14e"
 borderColor = "#3b3128"
+chartCategoricalColors = ["#f2c14e", "#f2e9d8", "#4a3d31", "#a8957a", "#17120d", "#2a221b",
+                          "#f2c14e", "#f2e9d8", "#4a3d31", "#a8957a"]
+chartSequentialColors = ["#b8860b", "#c59320", "#d1a02e", "#dead3c", "#ebba48",
+                         "#f2c662", "#f2cf84", "#f2d8a1", "#f2e1bd", "#f2e9d8"]
 
 [theme.light]
 base = "light"
@@ -40,3 +53,7 @@ textColor = "#17120d"
 primaryColor = "#8a5f00"
 linkColor = "#8a5f00"
 borderColor = "#e2d7c5"
+chartCategoricalColors = ["#a87a08", "#6b5f4f", "#e2d7c5", "#a08c6e", "#fbf8f1", "#ece4d6",
+                          "#a87a08", "#6b5f4f", "#e2d7c5", "#a08c6e"]
+chartSequentialColors = ["#8a5f00", "#9b6e06", "#ac7d0f", "#be8d16", "#d09d1d",
+                         "#daab3e", "#dcb665", "#dec084", "#e0cba1", "#e2d5bd"]
