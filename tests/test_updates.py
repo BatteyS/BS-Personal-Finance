@@ -73,3 +73,10 @@ def test_a_copy_off_main_is_neither_checked_nor_updated(published):
 def test_outside_a_git_checkout_there_is_no_version(tmp_path):
     assert updates.version(tmp_path) == ""
     assert updates.check(tmp_path) is None
+
+
+def test_a_version_file_names_the_release_where_there_is_no_git(tmp_path):
+    (tmp_path / "VERSION").write_text("BS-Personal-Finance-v1.20\n")
+    assert updates.version(tmp_path) == "v1.20"
+    (tmp_path / "VERSION").write_text("something else")
+    assert updates.version(tmp_path) == ""

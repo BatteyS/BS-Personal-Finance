@@ -54,6 +54,23 @@ FIDELITY = "\r\n".join([
 ])
 
 
+# Fidelity's positions header has 16 columns; every row under it ends with a trailing comma, so 17 cells.
+POSITIONS = "\r\n".join([
+    "Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,Current value,"
+    "Today's gain/loss dollar,Today's gain/loss percent,Total gain/loss dollar,Total gain/loss percent,"
+    "Percent of account,Cost basis total,Average cost basis,Type",
+    'X12345678,Cash Management,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,1234.56,$1.00,$0.00,"$1,234.56",$0.00,0.00%,'
+    "n/a,n/a,29.57%,n/a,n/a,Cash,",
+    'Z87654321,Individual - TOD,VTI,VANGUARD TOTAL STOCK MARKET ETF,10.5,$280.12,+$1.20,"$2,941.26",+$12.60,+0.43%,'
+    '+$341.26,+13.13%,70.07%,"$2,600.00",$247.62,Cash,',
+    "Z87654321,Individual - TOD,Pending Activity,,,,,$15.00,,,,,,,,,",
+    "",
+    '"The data and information in this spreadsheet is provided to you solely for your use."',
+    '"Date downloaded Nov-02-2026 10:03 a.m. ET"',
+    "",
+])
+
+
 def scrub_rows(text: str, *redact: str) -> tuple[list[list[str]], str, Counter]:
     """Scrub `text` with fresh stand-ins; return the parsed rows, the text and the counts."""
     scrubbed, counts = scrub.scrub_text(text, list(redact), 1, {})
@@ -121,6 +138,52 @@ def test_fidelity_keeps_bom_line_endings_labels_and_footer(tmp_path):
     assert [row[12] for row in data] == ["625", "-625", "1,850", "12.00"]
     assert [row[13] for row in data] == ["0.00"] * 4
     assert data[1][7:9] == ["3.000", "214.25"]  # quantity rounded, price kept
+
+
+def test_a_positions_file_keeps_its_labels_and_zeroes_every_number(tmp_path):
+    source = tmp_path / "Portfolio_Positions_Nov-02-2026.csv"
+    source.write_text(POSITIONS, newline="")
+    target, counts = scrub.scrub_file(source, tmp_path / "samples", [], 1, {})
+
+    assert target.name == "Portfolio_Positions_Nov-02-2026.scrubbed.csv"  # the download's date stays in the name
+    text = target.read_text()
+    for secret in ["12345678", "87654321", "1,234.56", "1234.56", "2,941.26", "280.12", "10.5", "1.20", "12.60",
+                   "341.26", "2,600.00", "247.62", "29.57", "70.07", "13.13", "0.43", "15.00"]:
+        assert secret not in text
+    assert "Date downloaded Nov-02-2026" in text and "solely for your use" in text
+
+    rows = list(csv.reader(io.StringIO(text, newline="")))
+    assert rows[0][:2] == ["Account number", "Account name"]
+    data = rows[1:4]
+    assert counts["data rows"] == 3 and counts["amounts rounded"] == 0
+    assert [len(row) for row in data] == [17, 17, 17] and all(row[16] == "" for row in data)  # the trailing comma stays
+    assert [row[1] for row in data] == ["Cash Management", "Individual - TOD", "Individual - TOD"]
+    assert [row[2] for row in data] == ["SPAXX**", "VTI", "Pending Activity"]
+    assert data[1][0] == data[2][0] != data[0][0]  # one stand-in per account, no real digits
+    assert data[0][4:16] == ["0.00", "$0.00", "$0.00", "$0.00", "$0.00", "0.00%", "n/a", "n/a", "0.00%", "n/a", "n/a", "Cash"]
+    assert data[1][4:16] == ["0.0", "$0.00", "$0.00", "$0.00", "$0.00", "0.00%", "$0.00", "0.00%", "0.00%", "$0.00",
+                             "$0.00", "Cash"]
+    assert data[2][7] == "$0.00" and data[2][4:7] == ["", "", ""]
+
+
+def test_a_row_one_cell_wider_than_the_header_is_data_only_when_that_cell_is_empty():
+    header = ["Account number", "Account name", "Current value"]
+    assert scrub.is_data_row(["X1", "Cash", "$5.00", ""], header, None)
+    assert not scrub.is_data_row(["X1", "Cash", "$5.00", "more"], header, None)
+    assert not scrub.is_data_row(["Date downloaded Nov-07-2026"], header, None)
+
+
+def test_header_layout_tells_activity_from_positions():
+    assert scrub.header_layout(["Date", "Description", "Amount", "Running Bal."]) == "activity"
+    assert scrub.header_layout(["Run Date", "Account", "Action", "Amount ($)"]) == "activity"
+    assert scrub.header_layout(["Account Number", "Account Name", "Symbol", "Current Value"]) == "positions"
+    assert scrub.header_layout(["Percent Of Account", "Current Value"]) is None  # no account column
+    assert scrub.header_layout(["Description", "", "Summary Amt."]) is None
+
+
+def test_a_positions_header_with_no_holdings_is_refused_without_the_date_hint():
+    with pytest.raises(ValueError, match=r"no data rows$"):
+        scrub.scrub_text("Account Number,Account Name,Current Value\n", [], 1, {})
 
 
 @pytest.mark.parametrize(

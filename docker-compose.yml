@@ -1,0 +1,44 @@
+# The page on a home server, reached only over Tailscale. Two containers: a Tailscale sidecar
+# that joins your tailnet as the node "finance" and serves https://finance.<tailnet>.ts.net, and
+# the page, which shares the sidecar's network and so has no port on the host at all. The sidecar
+# names the account asking in a Tailscale-User-Login header, and the page answers only the login
+# FINANCE_TAILSCALE_LOGIN gives, as it does on a Mac with phone access (phone.py).
+#
+# Settings come from a .env file beside this one (deploy/env.example shows it): the Tailscale auth
+# key, the login, and where the data folder and Tailscale's state live on the host. Then:
+#
+#     docker compose up -d --build
+#
+# See README.md, On a server.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: finance-tailscale
+    hostname: finance  # the node's name on the tailnet, so the page is finance.<tailnet>.ts.net
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env (deploy/env.example)}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      # Userspace networking: serving one local port needs no tun device and no extra privileges.
+      TS_USERSPACE: "true"
+    volumes:
+      # The node's identity, kept across restarts and upgrades, so the name stays the same.
+      - ${FINANCE_TAILSCALE_STATE:-/mnt/fast/apps/finance/tailscale}:/var/lib/tailscale
+      - ./deploy/tailscale-serve.json:/config/serve.json:ro
+    restart: unless-stopped
+
+  finance:
+    build: .
+    image: finance-tracker
+    container_name: finance
+    network_mode: service:tailscale  # the page listens inside the sidecar's network only
+    environment:
+      FINANCE_DATA_DIR: /data
+      FINANCE_TAILSCALE_LOGIN: ${FINANCE_TAILSCALE_LOGIN:?set FINANCE_TAILSCALE_LOGIN in .env (deploy/env.example)}
+    volumes:
+      # finance.db, exports/, rules.csv, budget.toml and accounts.toml: everything personal.
+      - ${FINANCE_DATA:-/mnt/fast/apps/finance/data}:/data
+    depends_on:
+      - tailscale
+    restart: unless-stopped

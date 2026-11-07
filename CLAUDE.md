@@ -24,4 +24,4 @@ Once a month, Fidelity, Bank of America and Amex CSV exports go in and one verdi
 
 ## Changes
 
-Changes reach `main` through pull requests. In the private repo, a build phase starts from its prompt in `docs/spec.md` (Phase prompts) and ends with that phase's check, which the user runs.
+Changes reach `main` through pull requests. In the private repo, a build phase starts from its prompt in `docs/spec.md` (Phase prompts) and ends with that phase's check, which the user runs. Every PR numbered x5 or x0 is exported to the public copy as `BS-Personal-Finance-v1.<PR number>`: the private `export_due.py` hook says when and makes the export (it reads the data folder, so a session never runs it), and `CLAUDE.local.md` holds the procedure for the rest.

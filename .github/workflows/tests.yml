@@ -1,7 +1,8 @@
 # The tests, on every push to main and every pull request, then the check that no file meant to be
 # shared carries personal data: the same check export_public.py runs before an export. There is no
 # data folder here, so the check reads its terms from git and, in the private repo, from
-# tests/accounts.samples.toml.
+# tests/accounts.samples.toml. A second job builds the container image (Dockerfile), starts it on
+# an empty data folder and checks that it answers, so the server's deploy is never the first build.
 
 name: tests
 
@@ -19,3 +20,26 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest
       - run: uv run export_public.py --check
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The compose file is well formed
+        run: TS_AUTHKEY=x FINANCE_TAILSCALE_LOGIN=x docker compose config --quiet
+      - name: The image builds
+        run: docker build -t finance-tracker .
+      - name: The page starts on an empty data folder and answers
+        run: |
+          mkdir -p "$RUNNER_TEMP/data" && chmod 777 "$RUNNER_TEMP/data"
+          docker run -d --name page -p 8501:8501 -v "$RUNNER_TEMP/data:/data" finance-tracker
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8501/_stcore/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8501/_stcore/health | grep -q ok
+          docker exec page /app/.venv/bin/python -c "import dashboard"
+          test -f "$RUNNER_TEMP/data/finance.db"
+      - name: What the page printed
+        if: always()
+        run: docker logs page || true

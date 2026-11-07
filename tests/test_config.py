@@ -54,7 +54,7 @@ def test_a_good_file_reads_into_the_shapes_the_code_uses(tmp_path):
     ("change", "message"),
     [
         (('institution = "amex"', 'institution = "Big Bank!"'), "institution must be a short lowercase name"),
-        (('kind = "credit"', 'kind = "loan"'), "kind must be one of"),
+        (('kind = "credit"', 'kind = "mortgage"'), "kind must be one of"),
         (('kind = "credit"', 'kind = "credit"\ncap = "ira"'), "cap must be one of"),
         (('fidelity_label = "CASH MANAGEMENT"', ''), "needs a fidelity_label"),
         (('key = "card"', 'key = "cash"'), "a key of its own"),

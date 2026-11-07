@@ -1,4 +1,5 @@
-"""What the page can change: saving uploads, importing them, adding a rule and re-running the rules.
+"""What the page can change: saving uploads, importing them, adding a rule and re-running the rules,
+teaching a file, adding an account, recording a balance.
 
 dashboard.py calls these; they write files and the database, and compute nothing for display.
 """
@@ -9,7 +10,7 @@ import csv
 import io
 from collections import Counter
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import re
@@ -22,7 +23,9 @@ import formats
 import load
 from load import normalize
 
-KINDS = {"credit": "a credit card", "cash": "checking or savings", "brokerage": "a brokerage account"}
+# The kinds an account added on the page can be, with how the form words each.
+KINDS = {"credit": "a credit card", "cash": "checking or savings", "brokerage": "a brokerage account",
+         "retirement": "a retirement account (a 401(k), an IRA)", "hsa": "a health savings account", "loan": "a loan"}
 # What a first accounts.toml starts with when the page writes it: the pay schedule and no planned
 # caps, but none of the example's accounts, which aren't the user's.
 FIRST_ACCOUNTS = """# Your accounts, started by the page when you taught it your first file. Add more there, or here
@@ -213,6 +216,19 @@ def add_account(name: str, kind: str, institution: str, paid_from: str | None = 
     replace_checked(config.ACCOUNTS_PATH, text, config.read_accounts)
     config.reload_accounts()
     return key
+
+
+def record_balance(account: str, as_of: date, amount: float) -> None:
+    """Store a balance typed on the page: what the account holds or, for a card or loan, what is
+    owed, which is stored negative. A reading for the same account and day is replaced."""
+    if account not in config.ACCOUNTS:
+        raise config.AccountsError(f"{account} isn't one of your accounts")
+    balance = -abs(amount) if config.ACCOUNTS[account]["kind"] in config.DEBT_KINDS else float(amount)
+    with closing(db.connect()) as connection, connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO balances (account, as_of, balance, source, recorded_at) VALUES (?, ?, ?, 'page', ?)",
+            (account, as_of.isoformat(), round(balance, 2) + 0.0, datetime.now().astimezone().isoformat(timespec="seconds")),
+        )
 
 
 def add_to_formats(block: str) -> None:

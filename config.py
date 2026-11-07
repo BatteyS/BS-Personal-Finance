@@ -34,7 +34,9 @@ CAPS_INCLUDE_EMPLOYER = {"hsa"}
 # is an institution whose files come in through a layout taught on the page or as OFX (formats.py).
 BUILT_IN_INSTITUTIONS = {"fidelity", "bofa", "amex"}
 INSTITUTION_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KINDS = {"cash", "brokerage", "retirement", "hsa", "credit"}
+KINDS = {"cash", "brokerage", "retirement", "hsa", "credit", "loan"}
+INVESTMENT_KINDS = {"brokerage", "retirement", "hsa"}  # the market moves their balances
+DEBT_KINDS = {"credit", "loan"}  # what is owed: their balances are negative
 CAP_KEYS = {"401k", "roth", "hsa"}
 
 
@@ -133,6 +135,9 @@ INVESTMENT_ACTIONS = [
     ("CHANGE IN MARKET VALUE", "internal"),  # 401(k) rows, seen in the sample
     ("REVENUE CREDIT", "internal"),
 ]
+# The pass-1 words that mean money received: a dividend, interest or a capital gain distribution.
+# A positive `investment` row carrying one is investment income on the income statement.
+INVESTMENT_INCOME = ["DIVIDEND", "CAPITAL GAIN", "INTEREST"]
 PRIOR_YEAR_MARKER = "PRIOR YEAR"  # an IRA or HSA contribution for the previous tax year
 
 SPENDING_CATEGORIES = [

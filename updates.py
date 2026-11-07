@@ -4,9 +4,12 @@
     uv run updates.py update    # bring this copy up to date
 
 A copy is a clone of the public repository, BS-Personal-Finance, whose releases are commits named
-"BS-Personal-Finance-v1.2" and so on. An update is a fast-forward of main to the repository's: it
-never merges, rebases or writes over a change of yours, and stops, changing nothing, when there is
-one. The page's sidebar shows the version and, when a newer one is out, an Update button.
+"BS-Personal-Finance-v1.20" and so on, numbered after the change they were published for. An
+update is a fast-forward of main to the repository's: it never merges, rebases or writes over a
+change of yours, and stops, changing nothing, when there is one. Personal Finance on the Desktop
+runs the update each time it starts the page (launch.sh), and the page's sidebar shows the version
+and, when a newer one is out, an Update button. A copy with no git history, the container, reads
+its version from the VERSION file an export writes.
 """
 
 from __future__ import annotations
@@ -35,15 +38,25 @@ def release_of(subjects: list[str]) -> tuple[str | None, int]:
     return None, len(subjects)
 
 
+def version_file(root: Path = ROOT) -> str:
+    """The release a VERSION file names, "v1.20", or "" without one: what an export writes for a
+    copy that has no git history to read, such as the container."""
+    try:
+        found = RELEASE.match((root / "VERSION").read_text().strip())
+    except OSError:
+        return ""
+    return found.group(1) if found else ""
+
+
 def version(root: Path = ROOT) -> str:
     """This copy's version: "v1.2", "v1.2 +3" with commits of its own since, or the commit itself
-    in a copy with no release in its history; "" outside a git checkout."""
+    in a copy with no release in its history; outside a git checkout, what VERSION says, or ""."""
     try:
         log = git("log", "--format=%s", "-200", root=root)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return version_file(root)
     if log.returncode != 0:
-        return ""
+        return version_file(root)
     release, since = release_of(log.stdout.splitlines())
     if release:
         return release + (f" +{since}" if since else "")

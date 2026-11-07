@@ -110,12 +110,18 @@ def takes_pass_1(row: dict) -> bool:
     return account.get("kind") in INVESTMENT_KINDS or account.get("institution") == "fidelity"
 
 
+def mentions(text: str, pattern: str) -> bool:
+    """Whether normalized text carries the pattern as whole words, plural included: FEE matches
+    FEES but not COFFEE or FEEDING."""
+    return re.search(r"\b" + re.escape(normalize(pattern)) + r"S?\b", text) is not None
+
+
 def investment_category(description: str, cap_key: str | None) -> str | None:
     """Pass 1 for one row: retirement, employer_match, investment, or None to leave it to passes 2
-    and 3. Patterns match whole words, plurals included: FEE matches FEES but not COFFEE or FEEDING."""
+    and 3. Patterns match whole words, plurals included."""
     text = normalize(description)
     for pattern, kind in config.INVESTMENT_ACTIONS:
-        if not re.search(r"\b" + re.escape(normalize(pattern)) + r"S?\b", text):
+        if not mentions(text, pattern):
             continue
         if kind == "internal":
             return "investment"

@@ -38,6 +38,16 @@ def test_access_is_read_from_phone_json(tmp_path):
     assert phone.read_access(path) is None
 
 
+def test_a_server_names_the_login_in_the_environment(tmp_path, monkeypatch):
+    missing = tmp_path / "phone.json"
+    monkeypatch.setenv(phone.LOGIN_VARIABLE, "pat@example.com")
+    assert phone.read_access(missing) == {"login": "pat@example.com"}
+    assert phone.refusal({"Tailscale-User-Login": "Pat@example.com"}, phone.read_access(missing)) is None
+    assert phone.refusal({"Tailscale-User-Login": "sam@example.com"}, phone.read_access(missing))
+    monkeypatch.setenv(phone.LOGIN_VARIABLE, "   ")
+    assert phone.read_access(missing) is None
+
+
 def test_tailscale_status_names_this_mac_and_its_account():
     data = {
         "BackendState": "Running",

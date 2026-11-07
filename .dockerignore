@@ -1,0 +1,29 @@
+# What never goes into the image. Real data first (see CLAUDE.md), then what the page doesn't run.
+data/
+exports/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.csv
+!rules.example.csv
+budget.toml
+.env
+
+# Private to the working repository, and not the page's to run.
+docs/
+samples/
+tests/
+.github/
+.claude/
+.git/
+
+# Made on the machine, not shipped.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.page.pid
+static/
+.DS_Store

@@ -89,10 +89,20 @@ draw_icon() {
   [ -f static/apple-touch-icon.png ] || "$UV" run --quiet icon.py static/apple-touch-icon.png || :
 }
 
+# A page starts on the newest version: before starting one, bring this copy up to date, as
+# install.sh does when run again (updates.py: a fast-forward of main, never over a change of yours,
+# and nothing when offline or off main). What it says goes to the log. PF_NO_UPDATE=1 skips it.
+update_copy() {
+  [ -z "${PF_NO_UPDATE:-}" ] || return 0
+  date "+--- %Y-%m-%d %H:%M:%S bringing the copy up to date" >>"$LOG"
+  "$UV" run --quiet updates.py update >>"$LOG" 2>&1 || :
+}
+
 # --serve-always PORT: what phone access's LaunchAgent runs. Becomes the page, in this same
 # process, so launchd can see it stop and start it again; no idle stop.
 if [ "${1:-}" = --serve-always ]; then
   port=$2
+  update_copy
   draw_icon
   echo "$$ $port" >"$PIDFILE"
   exec "$UV" run streamlit run dashboard.py --server.port "$port" --server.address localhost \
@@ -168,6 +178,7 @@ if port=$(our_port); then
   exit 0
 fi
 rm -f "$PIDFILE"
+update_copy
 port=$FIRST_PORT
 while [ "$port" -le "$LAST_PORT" ]; do
   if [ "$(probe "$port")" = free ]; then

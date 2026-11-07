@@ -38,7 +38,17 @@ CREATE TABLE IF NOT EXISTS imports (
     rows_duplicate INTEGER NOT NULL,
     imported_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS balances (
+    account TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    balance REAL NOT NULL,
+    source TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (account, as_of)
+);
 """
+TABLES = {"transactions", "accounts", "imports", "balances"}
 
 
 # How long a connection waits for another one's write (an import, a re-run) before giving up.
@@ -47,16 +57,15 @@ BUSY_TIMEOUT_SECONDS = 30
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open the database at config.DB_PATH (or db_path). The tables are created when the file is
-    new, and the accounts table is rewritten only when it differs from config, so opening the
-    database to read it doesn't write."""
+    new or from before a table was added, and the accounts table is rewritten only when it differs
+    from config, so opening the database to read it doesn't write."""
     path = db_path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)
-    try:
-        stored = set(connection.execute("SELECT name, institution, kind, cap_key FROM accounts"))
-    except sqlite3.OperationalError:  # a new file: no tables yet
+    present = {name for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not TABLES <= present:
         connection.executescript(SCHEMA)
-        stored = set()
+    stored = set(connection.execute("SELECT name, institution, kind, cap_key FROM accounts"))
     if stored != set(account_rows()):
         refresh_accounts(connection)
     return connection

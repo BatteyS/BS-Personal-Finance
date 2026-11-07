@@ -14,6 +14,11 @@ data rows, footer lines), so the loader's parsers see the real shape. In the dat
 - Card Member names become REDACTED;
 - dates, prices, merchant text, Fidelity actions and account labels are kept.
 
+A Fidelity positions download (Portfolio_Positions_<date>.csv) has no dates: its header names an
+account column and a Current Value column, and every one of its numbers is a holding's value, price
+or size. In its data rows every number becomes zero; account numbers are masked and the account
+names, symbols and descriptions are kept, so the file still shows a parser its shape.
+
 Everywhere else too: bare numbers outside the data rows (BofA's summary block) become zero;
 the names in BofA's INDN: field, Zelle payments and wire beneficiaries, and every --redact
 phrase, become REDACTED; and any run of five or more
@@ -40,8 +45,8 @@ from pathlib import Path
 REDACTED = "REDACTED"
 DEFAULT_OUT = Path(__file__).resolve().parent / "samples"
 
-# A cell holding one number and nothing else: "-1,234.56", "$12.00", "(45.10)", " 625".
-NUMBER = re.compile(r"^(\s*[-+($]*)(\d[\d,]*)(\.\d+)?(\)?\s*)$")
+# A cell holding one number and nothing else: "-1,234.56", "$12.00", "(45.10)", " 625", "+0.43%".
+NUMBER = re.compile(r"^(\s*[-+($]*)(\d[\d,]*)(\.\d+)?(\)?%?\s*)$")
 DATE = re.compile(r"^\s*(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2})\s*$")
 DIGITS = re.compile(r"\d+")
 YEAR = re.compile(r"(19|20)\d\d")
@@ -66,15 +71,26 @@ def normalize_header(name: str) -> str:
     return " ".join(name.lower().split())
 
 
-def find_header(rows: list[list[str]]) -> int | None:
-    """Index of the first row naming a date column and a different money column (an amount, or a
-    debit or credit), or None."""
+def header_layout(row: list[str]) -> str | None:
+    """What a row would be the header of: "activity" when it names a date column and a different
+    money column (an amount, or a debit or credit); "positions" when it names an account column and
+    a Current Value column, as Fidelity's positions download does; None when neither."""
+    names = [normalize_header(cell) for cell in row]
+    dates = [i for i, name in enumerate(names) if "date" in name]
+    amounts = [i for i, name in enumerate(names) if re.match(r"(amount|debit|credit|withdrawal|deposit)", name)]
+    if any(d != a for d in dates for a in amounts):
+        return "activity"
+    if any(name.startswith("account") for name in names) and any(name.startswith("current value") for name in names):
+        return "positions"
+    return None
+
+
+def find_header(rows: list[list[str]]) -> tuple[int, str] | None:
+    """Index of the first header row and its layout (see header_layout), or None."""
     for index, row in enumerate(rows):
-        names = [normalize_header(cell) for cell in row]
-        dates = [i for i, name in enumerate(names) if "date" in name]
-        amounts = [i for i, name in enumerate(names) if re.match(r"(amount|debit|credit|withdrawal|deposit)", name)]
-        if any(d != a for d in dates for a in amounts):
-            return index
+        layout = header_layout(row)
+        if layout:
+            return index, layout
     return None
 
 
@@ -188,22 +204,31 @@ def scrub_loose_cell(cell: str, redact: list[str], stand_ins: dict[str, str], co
     return mask_text(cell, redact, stand_ins, counts)
 
 
-def is_data_row(row: list[str], header: list[str], date_column: int) -> bool:
-    """A row below the header is data when it is as wide as the header or its date cell parses."""
-    if len(row) == len(header):
+def is_data_row(row: list[str], header: list[str], date_column: int | None) -> bool:
+    """A row below the header is data when it is as wide as the header (a trailing comma, as
+    Fidelity's positions rows end, allowed) or its date cell parses. A positions file has no date
+    column, so there only the width counts."""
+    if len(row) == len(header) or (len(row) == len(header) + 1 and not row[-1].strip()):
         return True
-    return len(row) > date_column and bool(DATE.match(row[date_column]))
+    return date_column is not None and len(row) > date_column and bool(DATE.match(row[date_column]))
 
 
 def scrub_text(text: str, redact: list[str], step: int, stand_ins: dict[str, str]) -> tuple[str, Counter[str]]:
     """Scrub one export's text. Returns the scrubbed text and counts of what changed."""
     rows = list(csv.reader(io.StringIO(text, newline="")))
-    header_index = find_header(rows)
-    if header_index is None:
-        raise ValueError("no header row found (looked for a row naming a date column and an amount column)")
+    found = find_header(rows)
+    if found is None:
+        raise ValueError("no header row found (looked for a row naming a date column and an amount column, "
+                         "or an account column and a Current Value column)")
+    header_index, layout = found
     header = rows[header_index]
-    roles = [column_role(name) for name in header]
-    date_column = next(i for i, name in enumerate(header) if "date" in normalize_header(name))  # first date column
+    if layout == "positions":  # every number is a holding's value, price or size: all of them go
+        roles = ["account number" if column_role(name) == "account number" else "zero" for name in header]
+        date_column, beyond = None, "zero"
+    else:
+        roles = [column_role(name) for name in header]
+        date_column = next(i for i, name in enumerate(header) if "date" in normalize_header(name))  # first date column
+        beyond = "text"  # the role of a cell past the header's last column
     phrases = sorted({phrase.strip() for phrase in redact if phrase.strip()}, key=len, reverse=True)
     counts: Counter[str] = Counter()
 
@@ -215,13 +240,14 @@ def scrub_text(text: str, redact: list[str], step: int, stand_ins: dict[str, str
         elif index > header_index and is_data_row(row, header, date_column):
             counts["data rows"] += 1
             writer.writerow([
-                scrub_data_cell(cell, roles[i] if i < len(roles) else "text", phrases, step, stand_ins, counts)
+                scrub_data_cell(cell, roles[i] if i < len(roles) else beyond, phrases, step, stand_ins, counts)
                 for i, cell in enumerate(row)
             ])
         else:
             writer.writerow([scrub_loose_cell(cell, phrases, stand_ins, counts) for cell in row])
     if counts["data rows"] == 0:
-        raise ValueError("found a header but no data rows (are the dates in an unusual format?)")
+        hint = " (are the dates in an unusual format?)" if layout == "activity" else ""
+        raise ValueError(f"found a header but no data rows{hint}")
     return out.getvalue(), counts
 
 

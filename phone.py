@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 PORT = 8501
 LABEL = "io.github.batteys.bs-personal-finance.page"
 PHONE = config.DATA_DIR / "phone.json"
+LOGIN_VARIABLE = "FINANCE_TAILSCALE_LOGIN"  # a server's stand-in for phone.json: the login the page answers
 LOG = Path.home() / "Library" / "Logs" / "Personal Finance.log"
 TAILSCALE_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 PROTECTED = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"]
@@ -49,12 +50,16 @@ def say(text: str = "") -> None:
 # ---------------------------------------------------------------- the page's guard
 
 def read_access(path: Path | None = None) -> dict | None:
-    """What phone.json records, or None when phone access isn't set up."""
+    """What phone.json records; on a server with no phone.json, the login FINANCE_TAILSCALE_LOGIN
+    names (docker-compose.yml sets it from .env); None when there is neither, so phone access
+    isn't set up."""
     path = path or PHONE
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError):
-        return None
+        pass
+    login = os.environ.get(LOGIN_VARIABLE, "").strip()
+    return {"login": login} if login else None
 
 
 def refusal(headers, access: dict | None) -> str | None:

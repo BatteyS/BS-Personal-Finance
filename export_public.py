@@ -1,13 +1,17 @@
 """Copy the shareable part of this tracker into another folder, and check that nothing personal
 goes with it. The public repository, BS-Personal-Finance, is made from these exports.
 
-    uv run export_public.py ../BS-Personal-Finance   # export into a clone of the public repo
+    uv run export_public.py ../BS-Personal-Finance   # export HEAD into a clone of the public repo
+    uv run export_public.py --ref origin/main --label BS-Personal-Finance-v1.20 ../BS-Personal-Finance
     uv run export_public.py --check                   # only check this copy; CI runs it on every push
 
 What is shared is the engine: the code, the example files, the tests and the README, listed in
 ENGINE below. Personal files never are: the data folder (which git ignores anyway), the spec,
-the scrubbed samples and the accounts they came from. Only files git tracks are exported, and
-only as they stand in the last commit, so an export is a commit and not whatever is on disk.
+the scrubbed samples and the accounts they came from, and the export hook. Only files git tracks
+are exported, and only as they stand in a commit (HEAD, or the ref --ref names, so an export of
+origin/main needs no checkout), so an export is a commit and not whatever is on disk. --label
+writes the release's label into VERSION in the target, which a copy with no git history to read
+(the container) shows as its version.
 
 Before anything is written, every file that would be shared is checked for:
 
@@ -44,12 +48,15 @@ ENGINE = [
     "CLAUDE.md", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
     "accounts.example.toml", "budget.example.toml", "formats.example.toml", "rules.example.csv",
     "actions.py", "budget.py", "categorize.py", "config.py", "dashboard.py", "db.py", "export_public.py",
-    "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py", "updates.py",
+    "formats.py", "load.py", "ofx.py", "queries.py", "scrub.py", "statements.py", "updates.py",
     "install.sh", "launch.sh", "phone.py", "icon.py",
+    "Dockerfile", ".dockerignore", "docker-compose.yml", "deploy/*",
     "tests/*",
 ]
 # Never shared, even where a pattern above would take it.
-PRIVATE = ["tests/accounts.samples.toml", "tests/test_samples.py"]
+PRIVATE = ["tests/accounts.samples.toml", "tests/test_samples.py", "tests/test_export_due.py"]
+# Written into the target by --label, never part of the engine, and left alone by an export without one.
+VERSION_FILE = "VERSION"
 # Files whose terms are generic by definition: a term that appears in them is never personal.
 GENERIC = ["accounts.example.toml", "tests/accounts.toml"]
 SAMPLE_ACCOUNTS = ROOT / "tests" / "accounts.samples.toml"
@@ -76,12 +83,22 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
 
 
-def engine_files(untracked: bool = False) -> list[str]:
-    """The shared files git tracks, plus untracked ones that aren't ignored when asked."""
-    listed = git("ls-files").splitlines()
+def tree_files(ref: str) -> dict[str, str]:
+    """Every path in a commit's tree, with its mode ("100644", or "100755" for an executable)."""
+    found = {}
+    for line in git("ls-tree", "-r", ref).splitlines():
+        meta, _, path = line.partition("\t")
+        found[path] = meta.split()[0]
+    return found
+
+
+def engine_files(untracked: bool = False, ref: str = "HEAD") -> list[str]:
+    """The shared files in a commit's tree (HEAD unless ref says otherwise); or, when asked, the
+    shared files of the working copy, untracked ones that aren't ignored included."""
     if untracked:
-        listed += git("ls-files", "--others", "--exclude-standard").splitlines()
-    return sorted({path for path in listed if is_engine(path) and (ROOT / path).is_file()})
+        listed = git("ls-files").splitlines() + git("ls-files", "--others", "--exclude-standard").splitlines()
+        return sorted({path for path in listed if is_engine(path) and (ROOT / path).is_file()})
+    return sorted(path for path in tree_files(ref) if is_engine(path))
 
 
 def account_terms(path: Path) -> list[str]:
@@ -167,19 +184,20 @@ def scan(texts: dict[str, str], terms: list[tuple[str, re.Pattern]]) -> list[str
     return hits
 
 
-def committed_texts(files: list[str]) -> dict[str, str]:
-    """Each file as it stands in the last commit."""
-    return {path: git("show", f"HEAD:{path}") for path in files}
+def committed_texts(files: list[str], ref: str = "HEAD") -> dict[str, str]:
+    """Each file as it stands in a commit."""
+    return {path: git("show", f"{ref}:{path}") for path in files}
 
 
-def export(target: Path) -> int:
-    """Check, then write the committed engine files into target, removing files the export no
-    longer has. target's own .git is left alone."""
-    if git("status", "--porcelain", "--untracked-files=no").strip():
+def export(target: Path, ref: str = "HEAD", label: str | None = None) -> int:
+    """Check, then write the engine files of a commit into target, removing files the export no
+    longer has. target's own .git and VERSION are left alone; with a label, VERSION is written."""
+    if ref == "HEAD" and git("status", "--porcelain", "--untracked-files=no").strip():
         print("Commit or stash your changes first: an export is a commit, not what's on disk.", file=sys.stderr)
         return 1
-    files = engine_files()
-    texts = committed_texts(files)
+    modes = tree_files(ref)
+    files = sorted(path for path in modes if is_engine(path))
+    texts = committed_texts(files, ref)
     hits = scan(texts, personal_terms())
     if hits:
         print("Not exported: these lines carry personal data.", *hits, sep="\n  ", file=sys.stderr)
@@ -187,7 +205,7 @@ def export(target: Path) -> int:
     target.mkdir(parents=True, exist_ok=True)
     for existing in sorted(target.rglob("*"), reverse=True):
         relative = existing.relative_to(target).as_posix()
-        if relative == ".git" or relative.startswith(".git/"):
+        if relative in (".git", VERSION_FILE) or relative.startswith(".git/"):
             continue
         if existing.is_file() and relative not in texts:
             existing.unlink()
@@ -196,11 +214,14 @@ def export(target: Path) -> int:
     for path in files:
         destination = target / path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(subprocess.run(["git", "show", f"HEAD:{path}"], cwd=ROOT,
+        destination.write_bytes(subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT,
                                                capture_output=True, check=True).stdout)
-        destination.chmod((ROOT / path).stat().st_mode & 0o777)  # keeps install.sh executable
-    commit = git("rev-parse", "--short", "HEAD").strip()
-    print(f"Exported {len(files)} files from {commit} to {target}. Read the diff there, then commit and push.")
+        destination.chmod(0o755 if modes[path] == "100755" else 0o644)  # keeps install.sh executable
+    if label:
+        (target / VERSION_FILE).write_text(label + "\n")
+    commit = git("rev-parse", "--short", ref).strip()
+    named = f", labeled {label}" if label else ""
+    print(f"Exported {len(files)} files from {ref} ({commit}) to {target}{named}. Read the diff there, then commit and push.")
     return 0
 
 
@@ -208,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Export the shareable files, or check them for personal data.")
     parser.add_argument("target", nargs="?", type=Path, help="the folder to export into")
     parser.add_argument("--check", action="store_true", help="only check this copy, untracked files included")
+    parser.add_argument("--ref", default="HEAD", help="the commit to export (default HEAD; origin/main needs no checkout)")
+    parser.add_argument("--label", help="the release's label, written into VERSION in the target")
     args = parser.parse_args(argv)
     if args.check:
         files = engine_files(untracked=True)
@@ -220,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.target:
         parser.error("give a folder to export into, or --check")
-    return export(args.target.resolve())
+    return export(args.target.resolve(), args.ref, args.label)
 
 
 if __name__ == "__main__":

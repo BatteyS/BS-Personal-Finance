@@ -5,7 +5,8 @@
 #   key             a short id, stored with every transaction; don't change it once you have data
 #   name            what the page calls it
 #   institution     fidelity, bofa or amex: which export it comes from
-#   kind            cash, brokerage, retirement, hsa or credit
+#   kind            cash, brokerage, retirement, hsa, credit or loan. A loan exports nothing: its
+#                   balance is typed on the Net worth tab, where every account's balance shows
 #   cap             401k, roth or hsa for an account whose contributions count toward that IRS limit
 #   fidelity_label  for a Fidelity account, text from the export's Account column (its nickname or
 #                   plan name), matched without regard to case; when several match, the longest

@@ -350,7 +350,7 @@ def test_add_rule_appends_and_a_bad_rule_changes_nothing(tmp_path):
     assert path.read_text() == before and not (tmp_path / "rules.csv.new").exists()
 
 
-def test_the_page_renders_its_four_tabs(tmp_path, monkeypatch):
+def test_the_page_renders_its_five_tabs(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
 
     path = database(
@@ -367,19 +367,22 @@ def test_the_page_renders_its_four_tabs(tmp_path, monkeypatch):
 
     page = AppTest.from_file(dashboard, default_timeout=60).run()
     assert not page.exception
-    assert [tab.label for tab in page.tabs] == ["This month", "Budget vs actual", "Budget", "Assumptions & taxes"]
+    assert [tab.label for tab in page.tabs] == ["This month", "Net worth", "Budget vs actual", "Budget", "Assumptions & taxes"]
     assert page.tabs[0].success[0].value == "October 2026: +$1,850 to brokerage"
     assert [heading.value for heading in page.tabs[0].subheader] == [
         "Where the month went", "Brokerage", "Twelve months", "Uncategorized"]
+    # No balances recorded: Net worth says so and offers the form.
+    assert "No balances yet" in page.tabs[1].info[0].value
+    assert [heading.value for heading in page.tabs[1].subheader] == ["Record a balance"]
     # No budget.toml yet: the comparison waits for one, and the budget shows the example.
-    assert "Fill in your budget first" in page.tabs[1].info[0].value
-    assert "made-up example" in page.tabs[2].warning[0].value
-    assert "Tax calculation (annual)" in [heading.value for heading in page.tabs[3].subheader]
+    assert "Fill in your budget first" in page.tabs[2].info[0].value
+    assert "made-up example" in page.tabs[3].warning[0].value
+    assert "Tax calculation (annual)" in [heading.value for heading in page.tabs[4].subheader]
 
     shutil.copyfile(budget.BUDGET_EXAMPLE, tmp_path / "budget.toml")
     page = AppTest.from_file(dashboard, default_timeout=60).run()
     assert not page.exception
-    comparison = page.tabs[1].table[0].value.set_index("Category")
+    comparison = page.tabs[2].table[0].value.set_index("Category")
     assert comparison.loc["Groceries", "Spent in Oct"] == "$210"
     assert comparison.loc["Groceries", "Oct, under or over"] == "$140 under"  # 350 budgeted
 

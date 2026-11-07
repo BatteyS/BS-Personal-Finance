@@ -1,4 +1,5 @@
-"""Every number on the page, computed from the transactions table. See docs/spec.md, Measures.
+"""Every number on the page, computed from the transactions table, and for the Net worth tab from
+the balances table too. See docs/spec.md, Measures and Net worth.
 
 Each function opens its own connection (Streamlit serves sessions on separate threads) and returns
 a number, a dict or a DataFrame. Nothing else in the app computes money. Sums are rounded to cents
@@ -21,6 +22,12 @@ import db
 from load import normalize
 
 CAP_LABELS = {"401k": "401(k)", "roth": "Roth IRA", "hsa": "HSA"}
+# A reading this many days from a month's last day stands for that month end: the monthly routine
+# downloads positions on the first weekend, a few days after the month ends.
+READING_WINDOW_DAYS = 7
+# Money into an investment account that isn't the market's doing: transfers in (or out), payroll
+# contributions and employer money. Buys, sells, dividends and fees are the account's own activity.
+MONEY_IN_CATEGORIES = {"retirement", "employer_match"}
 
 # Brokerage legs whose partner is a cash or credit account: new money into brokerage, or money taken
 # back out. A move from one investment account to another (between the two brokerages, or from a
@@ -310,6 +317,307 @@ def trend(end_month: str, count: int = 12, db_path: Path | None = None, *,
     frame = frame.join(income_and_spending(db_path) if totals is None else totals, on="month")
     frame["brokerage"] = frame["month"].map(brokerage_inflow_by_month(db_path) if inflow_by_month is None else inflow_by_month)
     return frame.fillna(0.0).round(2)
+
+
+# ---------------------------------------------------------------- net worth
+
+
+def month_end(month: str) -> date:
+    """The last day of "2026-10"."""
+    year, number = int(month[:4]), int(month[5:7])
+    return date(year, number, calendar.monthrange(year, number)[1])
+
+
+def served_month(as_of: date) -> str:
+    """The month whose end a reading stands for: the nearest month end within the window, else the
+    reading's own month. A reading on 2 November stands for October."""
+    own = as_of.strftime("%Y-%m")
+    previous = (as_of.replace(day=1) - pd.Timedelta(days=1)).strftime("%Y-%m")
+    for month in (previous, own):
+        if abs((as_of - month_end(month)).days) <= READING_WINDOW_DAYS:
+            return month
+    return own
+
+
+def readings(db_path: Path | None = None) -> pd.DataFrame:
+    """Every reading: account, as_of (a date), balance and source, oldest first within each account."""
+    frame = read("SELECT account, as_of, balance, source FROM balances ORDER BY account, as_of", db_path=db_path)
+    frame["as_of"] = pd.to_datetime(frame["as_of"]).dt.date
+    return frame
+
+
+def balance_rows(db_path: Path | None = None) -> pd.DataFrame:
+    """What the balances need from every transaction: account, date, month, amount, category and
+    whether it is a transfer leg."""
+    frame = read("SELECT account, date, month, amount, category, transfer_id IS NOT NULL AS transfer FROM transactions",
+                 db_path=db_path)
+    frame["date"] = pd.to_datetime(frame["date"]).dt.date
+    return frame
+
+
+def month_end_balance(kind: str, account_readings: pd.DataFrame, account_rows: pd.DataFrame, month: str) -> dict | None:
+    """One account's balance at a month end, from its readings (oldest first) and its transactions:
+    {"balance", "as_of" (the reading's date), "exact"}, or None with no reading at all.
+
+    For a cash, credit or loan account: the reading nearest the month end, adjusted by the
+    transactions between the two dates (added when the reading comes first, taken off when it
+    comes after), which is exact since the exports carry every transaction. For an investment
+    account: the reading within READING_WINDOW_DAYS of the month end (exact), else the latest
+    earlier one, carried forward (not exact), since the market has moved since.
+    """
+    if account_readings.empty:
+        return None
+    end = month_end(month)
+    distance = account_readings["as_of"].map(lambda day: abs((day - end).days))
+    nearest = account_readings.loc[distance.idxmin()]
+    if kind in config.INVESTMENT_KINDS:
+        if distance.min() <= READING_WINDOW_DAYS:
+            return {"balance": cents(nearest["balance"]), "as_of": nearest["as_of"], "exact": True}
+        earlier = account_readings[account_readings["as_of"] <= end]
+        if earlier.empty:
+            return None
+        last = earlier.iloc[-1]
+        return {"balance": cents(last["balance"]), "as_of": last["as_of"], "exact": False}
+    as_of = nearest["as_of"]
+    if as_of <= end:
+        between = account_rows.loc[(account_rows["date"] > as_of) & (account_rows["date"] <= end), "amount"].sum()
+    else:
+        between = -account_rows.loc[(account_rows["date"] > end) & (account_rows["date"] <= as_of), "amount"].sum()
+    return {"balance": cents(nearest["balance"] + between), "as_of": as_of, "exact": True}
+
+
+def money_in(account_rows: pd.DataFrame, month: str) -> float:
+    """What went into (or out of) an investment account in a month that wasn't the market: its
+    transfer legs and its retirement and employer_match rows."""
+    rows = account_rows[account_rows["month"] == month]
+    own = rows[(rows["transfer"] == 1) | rows["category"].isin(MONEY_IN_CATEGORIES)]
+    return cents(own["amount"].sum())
+
+
+def as_of_label(kind: str, as_of: date, exact: bool, month: str) -> str:
+    """How a month-end balance was known: the reading's day; "carried" after it for an older
+    investment reading; "from transactions" when a cash, card or loan reading was brought to the
+    month end by the transactions in between."""
+    day = f"{as_of:%b} {as_of.day}"
+    if kind in config.INVESTMENT_KINDS:
+        return day if exact else f"{day}, carried"
+    return day if as_of == month_end(month) else f"{day}, from transactions"
+
+
+def month_end_balances(today: date | None = None, db_path: Path | None = None) -> tuple[list[str], dict[str, dict[str, dict]]]:
+    """Every account's balance at every month end before today, from the first month end a
+    reading stands for: the months, and {account: {month: month_end_balance}} with only the
+    months the account has a balance for. Both empty with no readings."""
+    today = today or date.today()
+    all_readings, all_rows = readings(db_path), balance_rows(db_path)
+    if all_readings.empty:
+        return [], {}
+    first = min(min(served_month(day), day.strftime("%Y-%m")) for day in all_readings["as_of"])
+    last = (today.replace(day=1) - pd.Timedelta(days=1)).strftime("%Y-%m")
+    if first > last:
+        return [], {}
+    months = [str(period) for period in pd.period_range(first, last, freq="M")]
+    balances: dict[str, dict[str, dict]] = {}
+    for key, spec in config.ACCOUNTS.items():
+        own_readings = all_readings[all_readings["account"] == key].reset_index(drop=True)
+        own_rows = all_rows[all_rows["account"] == key]
+        found = {month: month_end_balance(spec["kind"], own_readings, own_rows, month) for month in months}
+        balances[key] = {month: found for month, found in found.items() if found}
+    return months, balances
+
+
+def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
+    """Everything the Net worth tab shows, for the month ends before today from the first one a
+    reading stands for:
+
+    "months": those months; "by_kind": a table of each kind's total per month (debts negative);
+    "total": net worth per month; "accounts": one row per account with a balance at the latest
+    month end (key, name, kind, balance, as_of, exact, change, money_in, growth; the last three
+    None when they can't be known); "latest" and "previous": those months; "change": net worth's
+    change since the previous month end; "market": the investment accounts' growth, summed, when
+    every one with a balance has it (else None); "you": the rest of the change.
+    """
+    today = today or date.today()
+    empty = {"months": [], "by_kind": pd.DataFrame(), "total": pd.Series(dtype=float), "accounts": pd.DataFrame(),
+             "latest": None, "previous": None, "change": None, "market": None, "you": None}
+    months, balances = month_end_balances(today, db_path)
+    if not months:
+        return empty
+    all_rows = balance_rows(db_path)
+
+    by_kind = pd.DataFrame(0.0, index=months, columns=sorted({spec["kind"] for spec in config.ACCOUNTS.values()}))
+    for key, by_month in balances.items():
+        for month, found in by_month.items():
+            by_kind.loc[month, config.ACCOUNTS[key]["kind"]] += found["balance"]
+    by_kind = by_kind.loc[:, (by_kind != 0).any()].round(2) + 0.0
+    total = (by_kind.sum(axis=1).round(2) + 0.0) if not by_kind.empty else pd.Series(0.0, index=months)
+
+    latest, previous = months[-1], (months[-2] if len(months) > 1 else None)
+    rows = []
+    for key, spec in config.ACCOUNTS.items():
+        now = balances[key].get(latest)
+        if now is None:
+            continue
+        before = balances[key].get(previous) if previous else None
+        investment = spec["kind"] in config.INVESTMENT_KINDS
+        put_in = money_in(all_rows[all_rows["account"] == key], latest) if investment else None
+        growth = None
+        if investment and before and now["exact"] and before["exact"]:
+            growth = cents(now["balance"] - before["balance"] - put_in)
+        rows.append({"key": key, "name": spec["name"], "kind": spec["kind"], "balance": now["balance"],
+                     "as_of": now["as_of"], "exact": now["exact"],
+                     "change": cents(now["balance"] - before["balance"]) if before else None,
+                     "money_in": put_in, "growth": growth})
+    accounts = pd.DataFrame(rows, columns=["key", "name", "kind", "balance", "as_of", "exact", "change", "money_in", "growth"])
+    for column in ("change", "money_in", "growth"):  # None where a figure can't be known, never NaN
+        accounts[column] = accounts[column].astype(object).where(accounts[column].notna(), None)
+    change = cents(total[latest] - total[previous]) if previous else None
+    growths = accounts.loc[accounts["kind"].isin(config.INVESTMENT_KINDS), "growth"]
+    market = cents(growths.sum()) if change is not None and len(growths) and growths.notna().all() else None
+    return {"months": months, "by_kind": by_kind, "total": total, "accounts": accounts, "latest": latest,
+            "previous": previous, "change": change, "market": market,
+            "you": cents(change - market) if market is not None else None}
+
+
+# ---------------------------------------------------------------- periods, for Finance mode
+
+PERIOD_KINDS = ["Month", "Quarter", "Year to date", "Year"]
+
+
+def complete_months(today: date | None = None, db_path: Path | None = None) -> list[str]:
+    """The months with data whose last day is before today, oldest first."""
+    today = today or date.today()
+    return [month for month in months(db_path) if month_end(month) < today]
+
+
+def span(first: str, last: str) -> list[str]:
+    """The months from first through last, as "YYYY-MM"."""
+    return [str(period) for period in pd.period_range(first, last, freq="M")]
+
+
+def shift(month: str, by: int) -> str:
+    """The month `by` months after (or before, negative) a month."""
+    return str(pd.Period(month, freq="M") + by)
+
+
+def short(month: str) -> str:
+    """ "2026-10" becomes "Oct"."""
+    return month_label(month)[:3]
+
+
+def period_of(kind: str, month: str) -> dict:
+    """The period of a kind that holds `month`: its key, label, months and end (its last month).
+    For a month and for year to date, that is the period ending with the month itself."""
+    year = month[:4]
+    if kind == "Month":
+        period = {"key": month, "label": month_label(month), "months": [month], "end": month}
+    elif kind == "Quarter":
+        number = (int(month[5:7]) - 1) // 3 + 1
+        first, last = f"{year}-{3 * number - 2:02d}", f"{year}-{3 * number:02d}"
+        period = {"key": f"{year}-Q{number}", "label": f"Q{number} {year}", "months": span(first, last), "end": last}
+    elif kind == "Year to date":
+        label = f"{short(f'{year}-01')}–{short(month)} {year}" if month[5:7] != "01" else f"{short(month)} {year}"
+        period = {"key": f"{year}-ytd-{month[5:7]}", "label": label, "months": span(f"{year}-01", month), "end": month}
+    else:
+        period = {"key": year, "label": year, "months": span(f"{year}-01", f"{year}-12"), "end": f"{year}-12"}
+    return {"kind": kind, **period}
+
+
+def previous_period(kind: str, period: dict) -> dict:
+    """The period before one: the previous month, quarter or year; for year to date, the same
+    months of the year before."""
+    if kind == "Year to date":
+        return period_of(kind, shift(period["end"], -12))
+    return period_of(kind, shift(period["end"], -len(period["months"])))
+
+
+def periods(kind: str, today: date | None = None, db_path: Path | None = None) -> list[dict]:
+    """The complete periods of a kind that hold data, newest first, each with the period before it
+    under "previous". A period is complete when its last month ended before today, so a quarter or
+    year in progress isn't offered; year to date is how the current year reads."""
+    today = today or date.today()
+    found: dict[str, dict] = {}
+    for month in complete_months(today, db_path):
+        period = period_of(kind, month)
+        if month_end(period["end"]) >= today:
+            continue  # still in progress
+        found.setdefault(period["key"], {**period, "previous": previous_period(kind, period)})
+    return sorted(found.values(), key=lambda period: period["end"], reverse=True)
+
+
+# ---------------------------------------------------------------- statements
+
+# The cash-account legs of transfers whose partner is an investment or loan account: money out
+# negative, money back positive, dated by the cash leg. Brokerage inflow seen from the cash side,
+# for every investment kind, plus loan payments and proceeds.
+CASH_LEGS_SQL = """
+SELECT leg.month, leg.amount, partner_account.kind AS partner_kind
+FROM transactions AS leg
+JOIN accounts AS account ON account.name = leg.account
+JOIN transactions AS partner ON partner.id = leg.transfer_id
+JOIN accounts AS partner_account ON partner_account.name = partner.account
+WHERE account.kind = 'cash' AND partner_account.kind IN ('brokerage', 'retirement', 'hsa', 'loan')
+  AND leg.month BETWEEN ? AND ?
+"""
+
+
+def category_totals(first: str, last: str, db_path: Path | None = None) -> pd.Series:
+    """The sum of amounts in each category over the months first through last, signed, to cents."""
+    rows = read("SELECT category, SUM(amount) AS amount FROM transactions WHERE month BETWEEN ? AND ? GROUP BY category",
+                (first, last), db_path)
+    return rows.set_index("category")["amount"].round(2) + 0.0
+
+
+def is_investment_income(description: str) -> bool:
+    """Whether a description says money was received: a dividend, interest or a capital gain
+    distribution (config.INVESTMENT_INCOME), by pass 1's own word matching."""
+    text = normalize(description)
+    return any(categorize.mentions(text, word) for word in config.INVESTMENT_INCOME)
+
+
+def investment_income(first: str, last: str, db_path: Path | None = None) -> pd.DataFrame:
+    """Dividends, interest and capital gain distributions received in the months first through last:
+    the positive `investment` rows whose description says so, as account, kind (the account's) and
+    amount. Reinvestments, buys, sells, fees and a 401(k)'s change in market value are never income."""
+    rows = read(
+        "SELECT t.account, a.kind, t.amount, t.description FROM transactions AS t JOIN accounts AS a ON a.name = t.account"
+        " WHERE t.category = 'investment' AND t.amount > 0 AND t.month BETWEEN ? AND ?",
+        (first, last),
+        db_path,
+    )
+    received = rows["description"].map(is_investment_income).astype(bool)
+    return rows.loc[received, ["account", "kind", "amount"]].reset_index(drop=True)
+
+
+def cash_legs(first: str, last: str, db_path: Path | None = None) -> pd.DataFrame:
+    """The cash-account legs of transfers to or from investment and loan accounts in the months first
+    through last: month, amount (money out negative) and the partner account's kind."""
+    return read(CASH_LEGS_SQL, (first, last), db_path)
+
+
+def contributions_between(first: str, last: str, db_path: Path | None = None) -> pd.Series:
+    """Contributions in the months first through last (`retirement` rows on accounts with a cap),
+    summed by cap, to cents."""
+    rows = read(
+        "SELECT a.cap_key, SUM(t.amount) AS amount FROM transactions AS t JOIN accounts AS a ON a.name = t.account"
+        " WHERE t.category = 'retirement' AND a.cap_key IS NOT NULL AND t.month BETWEEN ? AND ? GROUP BY a.cap_key",
+        (first, last),
+        db_path,
+    )
+    return rows.set_index("cap_key")["amount"].round(2) + 0.0
+
+
+def non_cash_investing(first: str, last: str, db_path: Path | None = None) -> float:
+    """Payroll deferrals and employer money in the months first through last: `retirement` and
+    `employer_match` rows with no transfer partner, which reached the accounts without passing
+    through cash."""
+    rows = read(
+        "SELECT COALESCE(SUM(amount), 0) AS amount FROM transactions"
+        " WHERE category IN ('retirement', 'employer_match') AND transfer_id IS NULL AND month BETWEEN ? AND ?",
+        (first, last),
+        db_path,
+    )
+    return cents(rows["amount"].iloc[0])
 
 
 def last_import(db_path: Path | None = None) -> pd.DataFrame:

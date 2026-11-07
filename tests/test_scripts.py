@@ -36,3 +36,10 @@ def test_the_installer_is_for_macos_only(tmp_path):
 
 def test_the_page_stops_after_twenty_idle_minutes_unless_told_otherwise():
     assert "IDLE_MINUTES=${PF_IDLE_MINUTES:-20}" in (ROOT / "launch.sh").read_text()
+
+
+def test_the_launcher_brings_the_copy_up_to_date_before_starting_a_page():
+    launcher = (ROOT / "launch.sh").read_text()
+    assert 'run --quiet updates.py update' in launcher and "PF_NO_UPDATE" in launcher
+    assert launcher.count("\n  update_copy\n") == 1  # under phone access's LaunchAgent
+    assert "rm -f \"$PIDFILE\"\nupdate_copy\n" in launcher  # before a fresh page, never for one already up

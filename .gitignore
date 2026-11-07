@@ -38,6 +38,9 @@ __pycache__/
 # Personal Claude Code overrides
 .claude/settings.local.json
 
+# A server's settings for docker-compose.yml: an auth key and a login (deploy/env.example shows it).
+.env
+
 # The launcher records the page it started here (launch.sh).
 .page.pid
 # The phone's home-screen icon, drawn by launch.sh (icon.py).

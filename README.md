@@ -68,9 +68,21 @@ Three things to know:
 cd ~/personal-finance && uv run phone.py disable
 ```
 
+## On a server
+
+The page can run as one container on a home server too, reached only over Tailscale, so the server can be headless and the Mac can sleep. `docker-compose.yml` runs the page beside a Tailscale sidecar that joins your tailnet as the node `finance`: the page is then `https://finance.<your-tailnet>.ts.net`, it has no port on the host at all, and it answers only the Tailscale login you name, the way phone access does on a Mac. With Docker on the server and a clone of this repository:
+
+1. Copy `deploy/env.example` to `.env` beside `docker-compose.yml` and fill it in: a Tailscale auth key from your admin console, your Tailscale login, and where the data folder and Tailscale's state should live. The data folder must belong to user id 1000, which the page runs as.
+2. Run `docker compose up -d --build`. `docker compose logs tailscale` prints the node's address once it has joined.
+3. Open the address on any of your devices. The data folder starts empty: import your exports from the sidebar, and copy your `accounts.toml`, `budget.toml` and `rules.csv` into it from your laptop.
+
+The sidebar's version and **Update** button don't appear in a container; to update, pull and run the same command. The data folder is never touched by an update, and it holds every export and `finance.db`, so back it up the way you would the laptop's.
+
 ## Updating
 
-The page's sidebar says which version you have, and when a newer one is out, shows an **Update** button. The page then restarts itself on the new version and comes back in a few seconds (if you started it by hand with `streamlit run`, it says to restart it there). If a page that was running during an update ever reaches for something only the new version has, it says so and offers a **Restart** button. Running the installer again does the same, from Terminal:
+**Personal Finance** on the Desktop brings your copy up to date each time it starts the page, so you normally run the newest version without doing anything. An update is a fast-forward of your copy to the newest release: it never writes over a change of yours, and skips quietly when you're offline. Versions are numbered after the change they were published for, v1.20 and so on, and each is a release at [github.com/BatteyS/BS-Personal-Finance/releases](https://github.com/BatteyS/BS-Personal-Finance/releases).
+
+For a page already running, the sidebar says which version you have, and when a newer one is out, shows an **Update** button. The page then restarts itself on the new version and comes back in a few seconds (if you started it by hand with `streamlit run`, it says to restart it there). If a page that was running during an update ever reaches for something only the new version has, it says so and offers a **Restart** button. Running the installer again does the same, from Terminal:
 
 ```bash
 cd ~/personal-finance && sh install.sh
@@ -80,12 +92,18 @@ An update never writes over a change of yours: a copy whose files you've edited 
 
 ## Each month
 
-1. **Export three CSV files,** each from about six weeks back through today; overlaps are fine, since repeated rows are skipped:
+1. **Export four CSV files.** Three carry activity, each from about six weeks back through today (overlaps are fine, since repeated rows are skipped); the fourth carries today's balances:
    - Fidelity: Activity & Orders → History, **All accounts**
+   - Fidelity again: Portfolio → Positions → **Download**, for Net worth
    - Bank of America: your checking account
    - Amex: your card's activity
 2. **Import them** from the page's sidebar.
 3. **Read the verdict,** then clear **Uncategorized**: pick each new merchant, check the suggested pattern, choose a category, save. Every save re-sorts all your months.
+4. **Glance at Net worth.** Each Fidelity account should carry the positions file's date, and Bank of America its last posted day. A card or loan you've typed a balance for follows its transactions from there; type a fresh one if it has drifted.
+
+**Finance mode.** The **Personal | Finance** toggle at the top right reads the same data as statements, each beside the period before: a balance sheet as of a month, quarter or year end (assets, liabilities and net worth, each line opening to its accounts); an income statement for the period on a cash basis (take-home pay, employer money and dividends in, spending by category out, net of refunds); and a cash flow that reconciles the two. The cash flow's last line is zero when every transaction is categorized and every transfer matched, and otherwise the size of what's missing: an unmatched transfer, an export you haven't imported, a typed balance the transactions disagree with. The page remembers the mode in its address (`?mode=finance`), so a bookmark or the phone's home-screen icon reopens where you left it. Only complete periods are offered; **Year to date** is how the current year reads.
+
+**Net worth.** The second tab shows what every account held at the end of each month, stacked by kind with debts below zero, and splits each month's change into what the market did and what you did. Balances come from Bank of America's export (its running balance), from the Fidelity positions download (every Fidelity account's value on one day), and from **Record a balance** on the tab for anything else: a card's statement balance, a loan, an HSA held elsewhere. A card or loan is recorded as what you owe. Cash, cards and loans are brought to each month end by their transactions, so one typed balance carries a card from then on; an investment account shows a real reading taken within a week of the month end, or its last reading with the date it was taken.
 
 **Other banks.** Fidelity, Bank of America and Amex are built in. For any other institution, download its CSV, or its OFX/QFX ("Quicken" or "Money") file if it offers one, and import it the same way. The first time, the page shows **Teach this file**: the file's first rows, with first guesses at which columns hold the date, the amount and the description, and whether spending shows as negative or positive. Check them against the preview of how the rows will be stored, pick the account (or describe a new one, and for a card, which account pays it), and click **Save and import**. From then on, files with that layout import by themselves. An OFX file only asks which of your accounts it belongs to. What you teach is saved in `data/formats.toml` (`formats.example.toml` shows its shape).
 
@@ -95,7 +113,7 @@ Moves between your own accounts (a card payment, cash to brokerage) are matched 
 
 | File | Holds |
 | --- | --- |
-| `finance.db` | Every transaction imported, with its category |
+| `finance.db` | Every transaction imported, with its category, and every balance recorded |
 | `exports/` | Every file you've imported, kept |
 | `accounts.toml` | Your accounts, the transfers between them, your pay schedule |
 | `budget.toml` | Your budget, written by the interview |

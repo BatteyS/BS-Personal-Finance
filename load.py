@@ -9,6 +9,11 @@ built-in parsers; any other institution's CSV comes in through a layout taught o
 OFX/QFX files through the account they name (formats.py, ofx.py). See docs/spec.md: Bank exports,
 Row ids and Data model.
 
+Two files also carry balances, kept as readings in the balances table (see docs/spec.md, Net
+worth): Bank of America's running balance gives one reading per day in the file, and a Fidelity
+positions download gives every Fidelity account's value on the day it was downloaded, and no
+transactions at all.
+
 The parsers were written against the layouts documented in the spec, before any samples existed.
 The scrubbed samples are the truth: check each parser against them.
 """
@@ -20,6 +25,7 @@ import codecs
 import csv
 import hashlib
 import io
+import re
 import sqlite3
 import sys
 from collections import Counter
@@ -32,7 +38,11 @@ import db
 import formats
 import ofx
 
-DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y", "%d-%b-%Y", "%d %b %Y")
+DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y", "%d-%b-%Y", "%d %b %Y",
+                "%b-%d-%Y")
+POSITIONS = "fidelity positions"  # the institution of a Fidelity positions download
+POSITIONS_DATE = re.compile(r"Positions_([A-Za-z]{3}-\d{2}-\d{4})")  # the day, in the download's name
+DOWNLOADED = re.compile(r"Date downloaded\s+(\S+)", re.IGNORECASE)  # or in its footer
 # Amex's plain download has exactly these three columns; with extra details it also has one of
 # the Amex-only columns. BofA's checking export always adds Running Bal., so the two can't be confused.
 AMEX_PLAIN_COLUMNS = {"date", "description", "amount"}
@@ -82,6 +92,8 @@ def detect_institution(names: set[str]) -> str | None:
     """Which institution a header row belongs to, judged by the columns it names."""
     if {"run date", "account", "action", "amount"} <= names:
         return "fidelity"
+    if {"account name", "current value"} <= names:
+        return POSITIONS
     if {"date", "description", "amount", "running bal."} <= names:
         return "bofa"
     if names == AMEX_PLAIN_COLUMNS or (AMEX_PLAIN_COLUMNS <= names and names & AMEX_ONLY_COLUMNS):
@@ -173,6 +185,26 @@ def parse_bofa(rows: list[list[str]], header_index: int) -> list[dict]:
     ]
 
 
+def bofa_readings(rows: list[list[str]], header_index: int) -> list[dict]:
+    """Bank of America's running balance as one reading per day in the file: the balance after the
+    day's last posted row. The export lists oldest first, so that is the last of the day's rows; a
+    file that runs the other way is read the other way. The beginning-balance row counts too."""
+    columns = column_positions(rows[header_index])
+    dated = []
+    for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        day, balance_text = parse_date(cell(row, columns["date"])), cell(row, columns["running bal."]).strip()
+        if day is None or not balance_text:
+            continue
+        dated.append((day, parse_amount(balance_text, number)))
+    if not dated:
+        return []
+    newest_first = dated[0][0] > dated[-1][0]
+    by_day: dict[str, float] = {}
+    for day, balance in (reversed(dated) if newest_first else dated):
+        by_day[day] = balance  # in posting order, the day's last balance wins
+    return [{"account": "bofa_checking", "as_of": day, "balance": balance + 0.0} for day, balance in by_day.items()]
+
+
 def parse_amex(rows: list[list[str]], header_index: int) -> list[dict]:
     """Amex. The file has charges positive and payments negative, so every sign is flipped."""
     columns = column_positions(rows[header_index])
@@ -183,11 +215,11 @@ def parse_amex(rows: list[list[str]], header_index: int) -> list[dict]:
     return parsed
 
 
-def fidelity_account(label: str) -> str:
-    """The ACCOUNTS key whose fidelity_label appears in a Fidelity Account cell.
+def match_fidelity_label(label: str) -> str | None:
+    """The ACCOUNTS key whose fidelity_label appears in a Fidelity Account cell, or None when none does.
 
     When several labels appear, the longest wins: CASH MANAGEMENT beats INDIVIDUAL for
-    "Cash Management (Individual)". No match, or a tie, raises LoadError.
+    "Cash Management (Individual)". A tie raises LoadError.
     """
     text = normalize(label)
     matches = sorted(
@@ -199,10 +231,18 @@ def fidelity_account(label: str) -> str:
         reverse=True,
     )
     if not matches:
-        raise LoadError(f"the Fidelity account {label.strip()!r} matches no fidelity_label in accounts.toml")
+        return None
     if len(matches) > 1 and matches[0][0] == matches[1][0]:
         raise LoadError(f"the Fidelity account {label.strip()!r} matches two fidelity_labels in accounts.toml equally well")
     return matches[0][1]
+
+
+def fidelity_account(label: str) -> str:
+    """The ACCOUNTS key for a Fidelity Account cell; no match raises LoadError."""
+    account = match_fidelity_label(label)
+    if account is None:
+        raise LoadError(f"the Fidelity account {label.strip()!r} matches no fidelity_label in accounts.toml")
+    return account
 
 
 def parse_fidelity(rows: list[list[str]], header_index: int) -> list[dict]:
@@ -224,6 +264,63 @@ def parse_fidelity(rows: list[list[str]], header_index: int) -> list[dict]:
 
 
 PARSERS = {"fidelity": parse_fidelity, "bofa": parse_bofa, "amex": parse_amex}
+
+
+def parse_positions(rows: list[list[str]], header_index: int) -> tuple[list[dict], int, list[str]]:
+    """A Fidelity positions download: one reading per account, the sum of its holdings' Current
+    value. Returns the readings (account and balance; the day is added by the caller), how many
+    holding rows were read, and the Account names that match none of your fidelity_labels, which
+    are skipped rather than guessed."""
+    columns = column_positions(rows[header_index])
+    totals: dict[str, float] = {}
+    skipped: list[str] = []
+    read = 0
+    for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        label, value_text = cell(row, columns["account name"]).strip(), cell(row, columns["current value"]).strip()
+        if not label or not value_text:
+            continue  # blank lines and the disclaimer block
+        value = parse_amount(value_text, number)
+        read += 1
+        account = match_fidelity_label(label)
+        if account is None:
+            if label not in skipped:
+                skipped.append(label)
+            continue
+        totals[account] = totals.get(account, 0.0) + value
+    return [{"account": account, "balance": round(total, 2) + 0.0} for account, total in totals.items()], read, skipped
+
+
+def positions_date(file_name: str, rows: list[list[str]], header_index: int) -> str | None:
+    """The day a positions file's balances were true: the date in its name
+    (Portfolio_Positions_Nov-07-2026.csv, under any upload stamp), else the "Date downloaded" line
+    in its footer; None when neither is there."""
+    found = POSITIONS_DATE.search(file_name)
+    if found:
+        return parse_date(found.group(1))
+    for row in rows[header_index + 1:]:
+        found = DOWNLOADED.search(" ".join(row))
+        if found:
+            return parse_date(found.group(1))
+    return None
+
+
+def write_readings(connection: sqlite3.Connection, readings: list[dict], source: str, recorded_at: str) -> tuple[int, int]:
+    """Store readings ({account, as_of, balance}), each replacing an earlier reading for the same
+    account and day. Returns how many were written (new or changed) and how many were already
+    there unchanged."""
+    written = unchanged = 0
+    for reading in readings:
+        stored = connection.execute("SELECT balance FROM balances WHERE account = ? AND as_of = ?",
+                                    (reading["account"], reading["as_of"])).fetchone()
+        if stored and round(stored[0], 2) == round(reading["balance"], 2):
+            unchanged += 1
+            continue
+        connection.execute(
+            "INSERT OR REPLACE INTO balances (account, as_of, balance, source, recorded_at) VALUES (?, ?, ?, ?, ?)",
+            (reading["account"], reading["as_of"], reading["balance"], source, recorded_at),
+        )
+        written += 1
+    return written, unchanged
 
 
 def parse_layout(rows: list[list[str]], header_index: int, layout: dict) -> list[dict]:
@@ -304,6 +401,8 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
         text = read_text(path)
     except OSError as error:
         raise LoadError(f"can't read it: {error}") from None
+    readings: list[dict] = []
+    extra: dict = {}  # what the page says about a positions file, beyond its imports row
     if ofx.is_ofx(text):
         institution, transactions = "ofx", parse_ofx(text, known["ofx"])
     else:
@@ -312,16 +411,29 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
         except csv.Error as error:
             raise LoadError(f"can't read it as CSV: {error}") from None
         header_index, institution, layout = find_header(rows, text, known["csv"])
-        transactions = parse_layout(rows, header_index, layout) if layout else PARSERS[institution](rows, header_index)
+        if layout:
+            transactions = parse_layout(rows, header_index, layout)
+        elif institution == POSITIONS:
+            transactions = []
+            readings, read, skipped = parse_positions(rows, header_index)
+            as_of = positions_date(path.name, rows, header_index) or imported_at[:10]
+            for reading in readings:
+                reading["as_of"] = as_of
+            extra = {"as_of": as_of, "accounts": len(readings), "skipped": skipped}
+        else:
+            transactions = PARSERS[institution](rows, header_index)
+            if institution == "bofa":
+                readings = bofa_readings(rows, header_index)
     ids = row_ids(transactions)
     with connection:  # one database transaction per file: all of it or none of it
         new = insert_new(connection, transactions, ids, imported_at)
+        written, unchanged = write_readings(connection, readings, institution.replace(" ", "_"), imported_at)
         record = {
             "file": path.name,
             "institution": institution,
-            "rows_read": len(transactions),
-            "rows_new": new,
-            "rows_duplicate": len(transactions) - new,
+            "rows_read": read if institution == POSITIONS else len(transactions),
+            "rows_new": written if institution == POSITIONS else new,
+            "rows_duplicate": unchanged if institution == POSITIONS else len(transactions) - new,
             "imported_at": imported_at,
         }
         connection.execute(
@@ -329,7 +441,7 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
             " VALUES (:file, :institution, :rows_read, :rows_new, :rows_duplicate, :imported_at)",
             record,
         )
-    return record
+    return {**record, **extra}
 
 
 def load_files(paths: list[Path], db_path: Path | None = None) -> list[dict]:

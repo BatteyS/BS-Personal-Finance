@@ -1,7 +1,7 @@
 """The monthly page, laid out wide for a laptop screen: the verdict, where the month went with its
 biggest line items, brokerage so far beside a twelve-month trend, and what is uncategorized beside
-the add-rule form. It only lays out what queries.py returns; every change goes through actions.py.
-See docs/spec.md, Dashboard.
+the add-rule form; then the Net worth, Budget vs actual, Budget and Assumptions tabs. It only lays
+out what queries.py returns; every change goes through actions.py. See docs/spec.md, Dashboard.
 
     uv run streamlit run dashboard.py
 """
@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import threading
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +26,7 @@ import formats
 import load
 import phone
 import queries
+import statements
 import updates
 
 # Categorical slots 1-3 from the reference palette (dataviz skill). Text never wears these colors;
@@ -40,13 +42,19 @@ CATEGORY_COLORS = {
     "transit": "#9c6b30", "health": "#3fa7b5", "going out": "#b5338a",
     "hobbies": "#5b7a1e", "uncategorized": NEUTRAL,
 }
+# One fixed color per account kind on the Net worth chart, each area labeled in the legend.
+KIND_COLORS = {"cash": INCOME, "brokerage": BROKERAGE, "retirement": "#6250d6", "hsa": "#3fa7b5",
+               "credit": SPENDING, "loan": "#e34948"}
+KIND_LABELS = {"cash": "Cash", "brokerage": "Brokerage", "retirement": "Retirement", "hsa": "HSA",
+               "credit": "Credit cards", "loan": "Loans"}
 CHART_CONFIG = {"displayModeBar": False}
 ROOT = Path(__file__).resolve().parent
 AGENT = "io.github.batteys.bs-personal-finance.page"  # phone access's LaunchAgent (phone.py)
 # The modules this page imports. After an update, a page that wasn't restarted still holds the old
 # ones, while this file is read fresh on every click: see stale_code.
 OWN_MODULES = {"actions", "budget", "categorize", "config", "db", "formats", "load", "ofx", "phone", "queries",
-               "updates"}
+               "statements", "updates"}
+MODES = ["Personal", "Finance"]
 RULE_CATEGORIES = [name for name in config.SPENDING_CATEGORIES if name != "uncategorized"] + config.OTHER_CATEGORIES
 
 st.set_page_config(page_title="Finance", page_icon="💵", layout="wide")
@@ -75,8 +83,12 @@ for (const [tag, attrs] of [
 </script>""", height=0)
 # Streamlit leaves a tall empty band above the page; a laptop screen needs that room for the data.
 # Its button rows scroll sideways when full, hiding the last categories; wrap them instead.
+# Finance mode's statements right-align their figures, as statements do; a static table writes its
+# own left alignment on every cell, so the rule has to come from outside it.
 st.markdown("<style>[data-testid='stMainBlockContainer'] {padding-top: 2.5rem; padding-bottom: 2rem;}"
-            " [data-testid='stButtonGroup'] > div {flex-wrap: wrap;}</style>", unsafe_allow_html=True)
+            " [data-testid='stButtonGroup'] > div {flex-wrap: wrap;}"
+            " [class*='st-key-statement-'] td:not(:first-child), [class*='st-key-statement-'] th:not(:first-child)"
+            " {text-align: right !important;}</style>", unsafe_allow_html=True)
 
 
 def import_panel() -> None:
@@ -100,6 +112,12 @@ def import_panel() -> None:
                 st.warning(f"{result['file']}: a layout this tracker doesn't know yet. Teach it on the right.")
             elif "error" in result:
                 st.error(f"{result['file']}: {result['error']}")
+            elif result.get("institution") == load.POSITIONS:
+                day = date.fromisoformat(result["as_of"])
+                st.caption(f"{result['file']}: Fidelity positions, {result['accounts']} accounts as of {day:%b} {day.day}.")
+                if result.get("skipped"):
+                    st.warning(f"{result['file']}: not one of your accounts, so skipped: {', '.join(result['skipped'])}. "
+                               "To count one, add it to accounts.toml with its fidelity_label.")
         last = queries.last_import()
         if not last.empty:
             st.caption(f"Last import: {queries.import_summary(last)}")
@@ -484,6 +502,133 @@ def static_table(frame: pd.DataFrame, headers: dict[str, str]) -> None:
     st.table(frame[list(headers)].rename(columns=headers), hide_index=True, border="horizontal")
 
 
+# ---------------------------------------------------------------- net worth
+
+DASH = "—"  # a figure the tab can't know yet
+
+
+def translucent(color: str, alpha: float = 0.45) -> str:
+    """A hex color as rgba at the given opacity, for the areas under a line."""
+    red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({red},{green},{blue},{alpha})"
+
+
+def net_worth_chart(by_kind: pd.DataFrame, total: pd.Series) -> go.Figure:
+    """Net worth over the months: one stacked area per kind, assets above zero and debts below, and
+    the net worth line on top. One fixed color per kind, a legend, exact values on hover."""
+    labels = [f"{queries.month_label(month)[:3]} {month[2:4]}" for month in by_kind.index]
+    figure = go.Figure()
+    for kind in [kind for kind in KIND_COLORS if kind in by_kind.columns]:
+        figure.add_scatter(name=KIND_LABELS[kind], x=labels, y=by_kind[kind], mode="lines+markers",
+                           stackgroup="debts" if kind in config.DEBT_KINDS else "assets",
+                           line={"width": 1, "color": KIND_COLORS[kind]}, marker={"size": 5},
+                           fillcolor=translucent(KIND_COLORS[kind]),
+                           hovertemplate=f"{KIND_LABELS[kind]}: %{{y:$,.0f}}<extra></extra>")
+    figure.add_scatter(name="Net worth", x=labels, y=total.values, mode="lines+markers",
+                       line={"color": NEUTRAL, "width": 3}, marker={"size": 9},
+                       hovertemplate="Net worth: %{y:$,.0f}<extra></extra>")
+    figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor="rgba(136,135,128,0.25)", zerolinecolor=NEUTRAL)
+    figure.update_layout(height=320, margin={"l": 0, "r": 0, "t": 30, "b": 0}, hovermode="x unified",
+                         legend={"orientation": "h", "y": 1.12, "x": 0})
+    return figure
+
+
+def as_of_label(row: dict, month: str) -> str:
+    """queries.as_of_label for a row of the accounts table."""
+    return queries.as_of_label(row["kind"], row["as_of"], row["exact"], month)
+
+
+def optional_money(value: float | None) -> str:
+    return DASH if value is None or pd.isna(value) else queries.signed_money(value)
+
+
+def accounts_table(accounts: pd.DataFrame, month: str) -> None:
+    """One row per account at the month end, with totals: balance, how it was known, the change
+    since the month before, and for investment accounts money in and growth."""
+    investment = accounts["kind"].isin(config.INVESTMENT_KINDS)
+    growth = accounts.loc[investment, "growth"]
+    shown = pd.DataFrame({
+        "name": accounts["name"], "kind": accounts["kind"].map(KIND_LABELS),
+        "balance": accounts["balance"].map(queries.money),
+        "as_of": [as_of_label(row, month) for row in accounts.to_dict("records")],
+        "change": accounts["change"].map(optional_money),
+        "money_in": accounts["money_in"].map(optional_money), "growth": accounts["growth"].map(optional_money),
+    })
+    changes = accounts["change"].dropna()
+    shown.loc[len(shown)] = {
+        "name": "Total", "kind": "", "balance": queries.money(accounts["balance"].sum()), "as_of": "",
+        "change": optional_money(changes.sum()) if len(changes) == len(accounts) else DASH,
+        "money_in": optional_money(accounts.loc[investment, "money_in"].sum()) if investment.any() else DASH,
+        "growth": optional_money(growth.sum()) if len(growth) and growth.notna().all() else DASH,
+    }
+    static_table(shown, {"name": "Account", "kind": "Kind", "balance": "Balance", "as_of": "As of",
+                         "change": "Change", "money_in": "Money in", "growth": "Growth"})
+
+
+def record_balance_form() -> None:
+    """Type a balance for one of your accounts, or for a new one: the Amex balance, a loan, an HSA
+    held elsewhere. For a card or loan it asks what is owed."""
+    st.subheader("Record a balance")
+    yours = actions.your_accounts()
+    keys = list(yours)
+    choice = st.selectbox("Account", [*keys, "new"], key="balance_account",
+                          format_func=lambda key: "A new account…" if key == "new" else yours[key]["name"])
+    name = institution = ""
+    kind = yours[choice]["kind"] if choice != "new" else None
+    if choice == "new":
+        name = st.text_input("New account's name", key="balance_name", placeholder="Student loan")
+        kind = st.radio("It's", list(actions.KINDS), format_func=actions.KINDS.get, key="balance_kind")
+        institution = st.text_input("Institution, as one short word", key="balance_institution", placeholder="nelnet")
+    debt = kind in config.DEBT_KINDS
+    as_of = st.date_input("As of", value=date.today(), max_value=date.today(), key="balance_date")
+    amount = st.number_input("Owed" if debt else "Balance", min_value=0.0 if debt else None, step=100.0,
+                             format="%.2f", key="balance_amount",
+                             help="What the statement says you owe." if debt else "What the account holds.")
+    ready = choice != "new" or bool(name.strip() and institution.strip())
+    if st.button("Save", type="primary", key="balance_save", disabled=not ready):
+        try:
+            key = choice if choice != "new" else actions.add_account(name, kind, institution)
+            actions.record_balance(key, as_of, amount)
+            st.rerun()
+        except config.AccountsError as error:
+            st.error(str(error))
+    st.caption("A card or loan is recorded as what you owe. Bank of America's balance comes in with its export, and "
+               "every Fidelity account's with a positions download (Portfolio → Positions → Download).")
+
+
+def net_worth_page() -> None:
+    """The Net worth tab: the latest month end's net worth and how it changed, the trajectory by
+    kind, each account's balance, and the form for typing one."""
+    worth = queries.net_worth()
+    if not worth["months"]:
+        st.info("No balances yet. Import a Fidelity positions download or a Bank of America export from the "
+                "sidebar, or record a balance below. The tab works in month ends, so it fills in once the month "
+                "a balance belongs to has ended.")
+    else:
+        latest = worth["latest"]
+        head, you, market = st.columns([2, 1, 1])
+        delta = None
+        if worth["change"] is not None:
+            delta = f"{queries.signed_money(worth['change'])} since {queries.month_label(worth['previous'])[:3]}"
+        head.metric(f"Net worth, end of {queries.month_label(latest)}", queries.money(worth["total"][latest]), delta=delta)
+        if worth["market"] is not None:
+            you.metric("You", queries.signed_money(worth["you"]),
+                       help="The change that wasn't the market: money saved, spent and paid down.")
+            market.metric("Market", queries.signed_money(worth["market"]),
+                          help="The investment accounts' growth, beyond what was put into them.")
+        st.plotly_chart(net_worth_chart(worth["by_kind"], worth["total"]), width="stretch", config=CHART_CONFIG,
+                        key="net_worth")
+    table, form = st.columns([2, 1], gap="large")
+    with table:
+        if worth["months"]:
+            st.subheader(f"Accounts, end of {queries.month_label(worth['latest'])}")
+            accounts_table(worth["accounts"], worth["latest"])
+            st.caption("Change, money in and growth are since the month before. An investment account's growth is "
+                       "its change minus the money put in, and shows only between two real readings.")
+    with form:
+        record_balance_form()
+
+
 def money_table(frame: pd.DataFrame, label: str) -> None:
     """A summary table of label, monthly, annual and share of gross, formatted as the spreadsheet does."""
     shown = frame.assign(monthly=frame["monthly"].map(dollars), annual=frame["annual"].map(dollars),
@@ -654,14 +799,126 @@ def assumptions_page(plan: dict, example: bool) -> None:
     ]), {"label": "Step", "value": "Amount"})
 
 
+# ---------------------------------------------------------------- finance mode
+
+INDENT = " " * 4  # a static table collapses plain spaces
+
+
+def mode_toggle() -> str:
+    """Personal | Finance at the top right, remembered in the page's query string (?mode=finance)
+    so a refresh, a bookmark or the phone's home-screen icon opens in the mode it was saved with."""
+    saved = "Finance" if st.query_params.get("mode") == "finance" else "Personal"
+    _, corner = st.columns([4, 1])
+    chosen = corner.segmented_control("Mode", MODES, default=saved, key="mode", label_visibility="collapsed") or "Personal"
+    if chosen == "Finance":
+        st.query_params["mode"] = "finance"
+    elif "mode" in st.query_params:
+        del st.query_params["mode"]
+    return chosen
+
+
+def period_picker() -> dict | None:
+    """The kind of period and which one, for every Finance tab; None while there is no complete
+    period of that kind with data."""
+    kind_column, which_column = st.columns([3, 2])
+    kind = kind_column.radio("Period", queries.PERIOD_KINDS, horizontal=True, key="period_kind", label_visibility="collapsed")
+    options = queries.periods(kind)
+    if not options:
+        which_column.info(f"No complete {kind.lower()} with data yet." + (" Year to date covers the year so far." if kind == "Year" else ""))
+        return None
+    return which_column.selectbox("Which", options, format_func=lambda period: period["label"], key=f"period_{kind}",
+                                  label_visibility="collapsed")
+
+
+def statement_table(lines: pd.DataFrame, period: dict, key: str) -> None:
+    """A statement the accounting way: lines indented under their section, a rule above each
+    subtotal, totals in bold, figures right-aligned (by the page's style rule, through the
+    container's key), parentheses for negatives, dashes for the unknown."""
+    shown = pd.DataFrame({
+        "Line": [row.label if row.level in ("section", "subtotal", "total") else INDENT + row.label for row in lines.itertuples()],
+        period["label"]: ["" if level == "section" else statements.accounting(amount)
+                          for level, amount in zip(lines["level"], lines["amount"])],
+        period["previous"]["label"]: ["" if level == "section" else statements.accounting(prior)
+                                      for level, prior in zip(lines["level"], lines["prior"])],
+        "Change": ["" if level == "section" else statements.accounting(change)
+                   for level, change in zip(lines["level"], lines["change"])],
+    })
+    figures = shown.columns[1:].tolist()
+    styles = {"section": "font-weight: 600", "subtotal": "border-top: 1px solid #888780; font-weight: 600",
+              "total": "border-top: 1px solid #888780; font-weight: 700"}
+    levels = lines["level"].tolist()
+    styler = shown.style.apply(lambda row: [styles.get(levels[row.name], "")] * len(row), axis=1).hide(axis="index")
+    with st.container(key=f"statement-{key}"):
+        st.table(styler)
+
+
+def balance_sheet_page(period: dict) -> None:
+    """The Balance sheet tab: assets, liabilities and net worth as of the period's end, beside the
+    previous period's end, each line opening to its accounts."""
+    sheet = statements.balance_sheet(period)
+    if sheet["end"] is None:
+        st.info(f"No balances at the end of {period['label']} yet. Balances come from a Fidelity positions download, "
+                "Bank of America's export, or Record a balance on the Net worth tab in Personal mode.")
+        return
+    ends = f"as of {queries.month_label(sheet['end'])}"
+    if sheet["prior_end"]:
+        ends += f", beside {queries.month_label(sheet['prior_end'])}"
+    st.caption(f"Balance sheet {ends}. Liabilities are shown as what is owed; net worth is total assets less total liabilities.")
+    statement_table(sheet["lines"], period, "balance-sheet")
+    for label, accounts in sheet["accounts"].items():
+        with st.expander(f"{label}: {len(accounts)} account{'s' * (len(accounts) != 1)}"):
+            shown = accounts.assign(amount=accounts["amount"].map(statements.accounting),
+                                    prior=accounts["prior"].map(statements.accounting))
+            static_table(shown, {"name": "Account", "amount": period["label"], "as_of": "As of",
+                                 "prior": period["previous"]["label"], "prior_as_of": "Prior, as of"})
+
+
+def income_statement_page(period: dict) -> None:
+    """The Income statement tab: the period's income and expenses on a cash basis, beside the
+    period before."""
+    statement = statements.income_statement(period)
+    st.caption(f"Income statement for {period['label']}, beside {period['previous']['label']}. Cash basis: take-home pay "
+               "is income, and expenses are net of refunds.")
+    statement_table(statement["lines"], period, "income-statement")
+
+
+def cash_flow_page(period: dict) -> None:
+    """The Cash flow tab: the period's cash flow by the indirect method, reconciled to the balance
+    sheets at its start and end."""
+    flow = statements.cash_flow(period)
+    st.caption(f"Cash flow for {period['label']}, beside {period['previous']['label']}, by the indirect method, reconciled "
+               "to the balance sheet. The last line is zero when every transaction is categorized and every transfer matched.")
+    statement_table(flow["lines"], period, "cash-flow")
+
+
+def finance_page() -> None:
+    """Finance mode: the period picker, then the three statements."""
+    period = period_picker()
+    sheet_tab, income_tab, flow_tab = st.tabs(["Balance sheet", "Income statement", "Cash flow"])
+    if period is None:
+        return
+    with sheet_tab:
+        balance_sheet_page(period)
+    with income_tab:
+        income_statement_page(period)
+    with flow_tab:
+        cash_flow_page(period)
+
+
 def page() -> None:
-    """The sidebar, any file waiting to be taught, and the four tabs."""
+    """The sidebar, any file waiting to be taught, the mode toggle, then Personal mode's five tabs
+    or Finance mode's statements."""
     import_panel()
     teach_panel()
-    this_month, comparison_tab, budget_tab, assumptions_tab = st.tabs(
-        ["This month", "Budget vs actual", "Budget", "Assumptions & taxes"])
+    if mode_toggle() == "Finance":
+        finance_page()
+        return
+    this_month, worth_tab, comparison_tab, budget_tab, assumptions_tab = st.tabs(
+        ["This month", "Net worth", "Budget vs actual", "Budget", "Assumptions & taxes"])
     with this_month:
         month_page()
+    with worth_tab:
+        net_worth_page()
     plan, example = read_budget()
     if plan:
         with comparison_tab:
