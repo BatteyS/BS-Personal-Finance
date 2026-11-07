@@ -12,3 +12,31 @@ enableStaticServing = true
 [client]
 # Hide the developer toolbar (Deploy and friends); this page is only ever read.
 toolbarMode = "minimal"
+
+# The look of seanbattey.com: warm near-black with cream ink and a gold accent, the system's own
+# fonts, and pill-shaped buttons. The site is dark only; light mode is the same palette on cream
+# paper, its gold deepened so it still reads as text. The page follows the computer's setting.
+# dashboard.py reads each mode's textColor and primaryColor for what a theme can't style.
+[theme]
+font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+codeFont = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+baseRadius = "8px"
+buttonRadius = "full"
+
+[theme.dark]
+base = "dark"
+backgroundColor = "#17120d"
+secondaryBackgroundColor = "#211a14"
+textColor = "#f2e9d8"
+primaryColor = "#f2c14e"
+linkColor = "#f2c14e"
+borderColor = "#3b3128"
+
+[theme.light]
+base = "light"
+backgroundColor = "#fbf8f1"
+secondaryBackgroundColor = "#f3ecdf"
+textColor = "#17120d"
+primaryColor = "#8a5f00"
+linkColor = "#8a5f00"
+borderColor = "#e2d7c5"

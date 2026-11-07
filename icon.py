@@ -1,5 +1,6 @@
-"""The app's icon, drawn in code so the repo holds no images: a green ring, like the page's
-spending ring, on a dark rounded square, with one slice of the ring in a lighter green.
+"""The app's icon, drawn in code so the repo holds no images: a gold ring, like the page's
+spending ring, on a dark rounded square, with one slice of the ring in cream. The colors are
+seanbattey.com's: its background, its gold and its text.
 
     uv run icon.py static/apple-touch-icon.png         # 180 px, for a phone's home screen
     uv run icon.py --iconset /tmp/icon.iconset         # every size macOS wants, for the Desktop app
@@ -17,9 +18,9 @@ import sys
 import zlib
 from pathlib import Path
 
-BACKGROUND = (24, 26, 27)
-RING = (27, 175, 122)      # the brokerage green from the page's palette
-SLICE = (134, 224, 182)    # a lighter step of it
+BACKGROUND = (23, 18, 13)  # #17120d, the site's background
+RING = (242, 193, 78)      # #f2c14e, its gold
+SLICE = (242, 233, 216)    # #f2e9d8, its cream text
 ICONSET_SIZES = [16, 32, 64, 128, 256, 512, 1024]
 
 

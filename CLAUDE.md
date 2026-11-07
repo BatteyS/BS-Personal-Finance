@@ -10,14 +10,14 @@ Once a month, Fidelity, Bank of America and Amex CSV exports go in and one verdi
 - When a check needs real data, give the user the command to run in their own terminal, and ask for a scrubbed excerpt if something fails.
 - No real account numbers, balances, names or merchant totals in code, tests, fixtures, commit messages or docs.
 - New samples come from `uv run scrub.py`, which the user runs on the raw files.
-- Personal setup lives in the data folder, never in code: `accounts.toml` (accounts, transfer pairs, pay schedule), `budget.toml` and `rules.csv`. The repo ships `*.example.*` versions with made-up values; tests use `tests/accounts.toml`.
+- Personal setup lives in the data folder, never in code: `accounts.toml` (accounts, transfer pairs, pay schedule), `budget.toml`, `rules.csv` and `formats.toml` (layouts taught on the page). The repo ships `*.example.*` versions with made-up values; tests use `tests/accounts.toml`.
 - Before anything is shared, `uv run export_public.py --check` must pass. CI runs it on every push.
 
 `.claude/settings.json` denies reads of these paths; the rules above cover what a deny list can't.
 
 ## Code
 
-- Python 3.12 with uv: `uv run pytest`, `uv run <script>.py`. Modules sit at the repo root, one file per concern: config, db, load (with formats for taught layouts and ofx for OFX/QFX), categorize, queries, actions, budget, dashboard, plus `export_public.py` for the public copy.
+- Python 3.12 with uv: `uv run pytest`, `uv run <script>.py`. Modules sit at the repo root, one file per concern: config, db, load (with formats for taught layouts and ofx for OFX/QFX), categorize, queries, statements (Finance mode), actions, budget, dashboard, updates, phone, icon and scrub, plus `export_public.py` for the public copy.
 - Readable over clever: plain functions, type hints, docstrings, no classes unless they earn it, no framework beyond Streamlit.
 - Amounts are signed from the account's point of view everywhere: money out negative, money in positive. Round sums to cents before comparing or displaying them.
 - Logic is tested on synthetic rows; parsers are also tested on the scrubbed samples, in `tests/test_samples.py`, which stays private with them.

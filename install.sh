@@ -15,7 +15,8 @@
 #   2. uv, which runs the Python this tracker is pinned to.
 #   3. Your copy, in ~/personal-finance, and its Python packages. A copy that's already there is
 #      brought up to date, unless it has changes of yours.
-#   4. Personal Finance on your Desktop, which starts the page and opens it.
+#   4. Personal Finance on your Desktop, which starts the page and opens it. It also answers the
+#      link bs-personal-finance://launch, which the Launch button on seanbattey.com uses.
 #   5. If you want it, Personal Finance on your phone too: an icon on its home screen that opens
 #      the page from anywhere over Tailscale (phone.py).
 #
@@ -38,6 +39,7 @@ REPO_URL=${PF_REPO_URL:-https://github.com/BatteyS/BS-Personal-Finance.git}
 README_URL="https://github.com/BatteyS/BS-Personal-Finance#get-started"
 APP_NAME="Personal Finance"
 APP_ID="io.github.batteys.bs-personal-finance"
+URL_SCHEME="bs-personal-finance"   # the Desktop app answers bs-personal-finance://launch
 DESKTOP=${PF_DESKTOP:-$HOME/Desktop}
 LOG="$HOME/Library/Logs/Personal Finance install.log"
 MIN_MACOS=13
@@ -70,7 +72,7 @@ while [ $# -gt 0 ]; do
     --dir) [ $# -ge 2 ] || die "--dir needs a folder after it."; DIR=$2; shift ;;
     --no-open) OPEN= ;;
     --phone) PHONE=yes ;;
-    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "$1 isn't an option. The options are --dir FOLDER, --no-open and --phone." ;;
   esac
   shift
@@ -230,8 +232,18 @@ make_app() {
   app="$tmp/$APP_NAME.app"
   cat >"$tmp/main.applescript" <<'EOF'
 -- Personal Finance, made by install.sh: opens the page, starting it first if it isn't running.
--- Contents/Resources/open.sh names the copy.
+-- Contents/Resources/open.sh names the copy. A double-click opens the page, and so does the
+-- link bs-personal-finance://launch (the Launch button on seanbattey.com): whatever follows
+-- the scheme is ignored.
 on run
+	openPage()
+end run
+
+on open location theURL
+	openPage()
+end open location
+
+on openPage()
 	set opener to (POSIX path of (path to me)) & "Contents/Resources/open.sh"
 	try
 		do shell script "/bin/sh " & quoted form of opener
@@ -240,7 +252,7 @@ on run
 			display dialog errorText buttons {"OK"} default button "OK" with title "Personal Finance" with icon caution
 		end if
 	end try
-end run
+end openPage
 EOF
   quiet osacompile -o "$app" "$tmp/main.applescript" || return 1
   # The app's own icon (icon.py) in place of the script icon. The asset catalog holds the old one,
@@ -263,10 +275,16 @@ fi
 exec /bin/sh "\$FOLDER/launch.sh"
 EOF
   quiet plutil -replace CFBundleIdentifier -string "$APP_ID" "$app/Contents/Info.plist" || return 1
+  # The link bs-personal-finance://launch opens this app (main.applescript handles it).
+  quiet plutil -insert CFBundleURLTypes -json "[{\"CFBundleURLName\":\"$APP_ID\",\"CFBundleURLSchemes\":[\"$URL_SCHEME\"]}]" "$app/Contents/Info.plist" || return 1
   # Editing the bundle broke osacompile's signature. Seal it again, or Apple silicon may refuse
   # to open it.
   quiet codesign --force --sign - "$app" || return 1
   rm -rf "$dest" && mv "$app" "$dest" || return 1
+  # Tell LaunchServices about it now, so the link works before anything has opened the app. On
+  # a macOS without lsregister, the first open registers it.
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  if [ -x "$lsregister" ]; then quiet "$lsregister" -f "$dest"; fi
   rm -rf "$tmp"
 }
 

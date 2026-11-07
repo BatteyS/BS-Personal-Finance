@@ -23,6 +23,7 @@ import budget
 import categorize
 import config
 import formats
+import icon
 import load
 import phone
 import queries
@@ -52,18 +53,47 @@ ROOT = Path(__file__).resolve().parent
 AGENT = "io.github.batteys.bs-personal-finance.page"  # phone access's LaunchAgent (phone.py)
 # The modules this page imports. After an update, a page that wasn't restarted still holds the old
 # ones, while this file is read fresh on every click: see stale_code.
-OWN_MODULES = {"actions", "budget", "categorize", "config", "db", "formats", "load", "ofx", "phone", "queries",
-               "statements", "updates"}
+OWN_MODULES = {"actions", "budget", "categorize", "config", "db", "formats", "icon", "load", "ofx", "phone",
+               "queries", "statements", "updates"}
 MODES = ["Personal", "Finance"]
 RULE_CATEGORIES = [name for name in config.SPENDING_CATEGORIES if name != "uncategorized"] + config.OTHER_CATEGORIES
 
-st.set_page_config(page_title="Finance", page_icon="💵", layout="wide")
+
+def theme_colors(option: str) -> tuple[str, str]:
+    """One of the theme's colors from .streamlit/config.toml: the light theme's, then the dark's."""
+    return st.get_option(f"theme.light.{option}"), st.get_option(f"theme.dark.{option}")
+
+
+# seanbattey.com's look, which .streamlit/config.toml sets as the theme. A theme can't style
+# everything, so the style rules below carry some of its colors too, each as light-dark(the light
+# theme's, the dark theme's): the browser picks the one for the theme showing.
+INK = "light-dark(%s, %s)" % theme_colors("textColor")
+GOLD = "light-dark(%s, %s)" % theme_colors("primaryColor")  # deeper on cream, to read as text
+MUTED = "light-dark(#6b5f4f, #b5a891)"  # the site's quieter text, which no theme option holds
+ON_GOLD = "light-dark(#ffffff, #1c1508)"  # text on a gold button: the site's dark ink on its gold
+# The site's SB monogram, drawn as its header draws it. An image can't take the page's colors, so
+# it picks its gold by the computer's light or dark setting, which the theme follows too.
+LOGO = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='10 -12 86 208' width='43' height='104'>"
+        "<style>g {stroke: %s} @media (prefers-color-scheme: dark) {g {stroke: %s}}</style>"
+        "<g fill='none' stroke-width='20'><path d='M22 28v156h28a34 34 0 0 0 0-68H22' stroke-linejoin='miter'/>"
+        "<path d='M76.3 18.4A28 28 0 1 0 50 56a30 30 0 0 1 0 60' stroke-linecap='round' stroke-linejoin='round'/>"
+        "</g></svg>") % theme_colors("primaryColor")
+
+
+@st.cache_resource(show_spinner=False)
+def tab_icon() -> bytes:
+    """The app's icon (icon.py) for the browser tab, drawn once while the page runs."""
+    return icon.draw(64)
+
+
+st.set_page_config(page_title="Finance", page_icon=tab_icon(), layout="wide")
 # A request Tailscale forwarded from a phone must come from the account phone access was set up
 # for (phone.py); one on the Mac itself carries no Tailscale login and always passes.
 reason = phone.refusal(st.context.headers, phone.read_access())
 if reason:
     st.error(reason)
     st.stop()
+st.logo(LOGO, size="large")  # the top-left corner, where the site's header has it
 # The home-screen icon and full-screen mode, for "Add to Home Screen" on a phone. Streamlit owns
 # the page's <head>, so a zero-height component adds the tags to it.
 components.html("""<script>
@@ -85,10 +115,19 @@ for (const [tag, attrs] of [
 # Its button rows scroll sideways when full, hiding the last categories; wrap them instead.
 # Finance mode's statements right-align their figures, as statements do; a static table writes its
 # own left alignment on every cell, so the rule has to come from outside it.
-st.markdown("<style>[data-testid='stMainBlockContainer'] {padding-top: 2.5rem; padding-bottom: 2rem;}"
-            " [data-testid='stButtonGroup'] > div {flex-wrap: wrap;}"
-            " [class*='st-key-statement-'] td:not(:first-child), [class*='st-key-statement-'] th:not(:first-child)"
-            " {text-align: right !important;}</style>", unsafe_allow_html=True)
+# Then what the theme can't say: headings as the site's gold monospace section labels, dark ink on
+# gold buttons, and the charts' text in the page's ink instead of Streamlit's own blue-grays.
+st.markdown(("<style>[data-testid='stMainBlockContainer'] {padding-top: 2.5rem; padding-bottom: 2rem;}"
+             " [data-testid='stButtonGroup'] > div {flex-wrap: wrap;}"
+             " [class*='st-key-statement-'] td:not(:first-child), [class*='st-key-statement-'] th:not(:first-child)"
+             " {text-align: right !important;}"
+             " [data-testid='stHeading'] :is(h2, h3) {color: %(gold)s; font-size: 0.8125rem; font-weight: 600;"
+             " font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: 0.08em;"
+             " text-transform: uppercase;}"
+             " [data-testid='stBaseButton-primary'] {color: %(on_gold)s;}"
+             " [data-testid='stPlotlyChart'] :is(.slicetext, .annotation-text-g, .legend) text {fill: %(ink)s !important;}"
+             " [data-testid='stPlotlyChart'] :is(.xaxislayer-above, .yaxislayer-above) text {fill: %(muted)s !important;}"
+             "</style>") % {"gold": GOLD, "on_gold": ON_GOLD, "ink": INK, "muted": MUTED}, unsafe_allow_html=True)
 
 
 def import_panel() -> None:
@@ -440,9 +479,9 @@ def month_page() -> None:
         banner.error(str(error))
         return
     if verdict["green"]:
-        banner.success(verdict["text"], icon="✅")
+        banner.success(verdict["text"], icon=":material/check_circle:")
     else:
-        banner.error(verdict["text"], icon="🔴")
+        banner.error(verdict["text"], icon=":material/error:")
 
     st.subheader("Where the month went")
     spending = queries.spending_by_category(month)
@@ -717,7 +756,8 @@ def budget_page(plan: dict, example: bool) -> None:
     split, pay = budget.summary_by_class(plan, lines)
     surplus = split.loc[split["label"].str.startswith("Surplus"), "monthly"].iloc[0]
     if round(surplus, 2) < 0:
-        st.error(f"Over budget: the lines add up to {queries.money(-surplus)} a month more than gross pay.", icon="🔴")
+        st.error(f"Over budget: the lines add up to {queries.money(-surplus)} a month more than gross pay.",
+                 icon=":material/error:")
     st.caption("Every dollar of gross pay is assigned to a line; whatever is left is surplus for the taxable "
                "brokerage. Calculated lines (taxes, payroll savings, the premium and the commuter benefit) "
                "come from the Assumptions & taxes tab.")

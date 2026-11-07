@@ -84,9 +84,10 @@ connections() {
   lsof -nP -a -p "$2" -iTCP:"$1" -sTCP:ESTABLISHED 2>/dev/null | awk 'NR > 1' | wc -l | tr -d ' '
 }
 
-# The phone's home-screen icon, served from Streamlit's static folder (gitignored).
+# The phone's home-screen icon, served from Streamlit's static folder (gitignored). Drawn again
+# whenever icon.py is newer, so an update that changes the icon changes the phone's too.
 draw_icon() {
-  [ -f static/apple-touch-icon.png ] || "$UV" run --quiet icon.py static/apple-touch-icon.png || :
+  [ static/apple-touch-icon.png -nt icon.py ] || "$UV" run --quiet icon.py static/apple-touch-icon.png || :
 }
 
 # A page starts on the newest version: before starting one, bring this copy up to date, as
