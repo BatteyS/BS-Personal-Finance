@@ -355,35 +355,50 @@ def balance_rows(db_path: Path | None = None) -> pd.DataFrame:
     return frame
 
 
-def month_end_balance(kind: str, account_readings: pd.DataFrame, account_rows: pd.DataFrame, month: str) -> dict | None:
+def month_end_balance(kind: str, account_readings: pd.DataFrame, account_rows: pd.DataFrame, month: str,
+                      reach_from: date | None = None) -> dict | None:
     """One account's balance at a month end, from its readings (oldest first) and its transactions:
-    {"balance", "as_of" (the reading's date), "exact"}, or None with no reading at all.
+    {"balance", "as_of" (the reading's date), "exact", "estimated"}, or None when it can't be known.
 
     For a cash, credit or loan account: the reading nearest the month end, adjusted by the
     transactions between the two dates (added when the reading comes first, taken off when it
     comes after), which is exact since the exports carry every transaction. For an investment
     account: the reading within READING_WINDOW_DAYS of the month end (exact), else the latest
     earlier one, carried forward (not exact), since the market has moved since.
+
+    A month end more than READING_WINDOW_DAYS before the first reading is reached only on or after
+    reach_from, the earliest transaction from the account's institution: before it, the exports
+    don't cover the gap. There an investment account's balance is an estimate: the first reading
+    less the money put in between, as if the market stood still.
     """
     if account_readings.empty:
         return None
     end = month_end(month)
+    first = account_readings.iloc[0]
+    if (first["as_of"] - end).days > READING_WINDOW_DAYS:
+        if reach_from is None or end < reach_from:
+            return None
+        if kind in config.INVESTMENT_KINDS:
+            between = account_rows[(account_rows["date"] > end) & (account_rows["date"] <= first["as_of"])]
+            put_in = between.loc[(between["transfer"] == 1) | between["category"].isin(MONEY_IN_CATEGORIES), "amount"].sum()
+            return {"balance": cents(first["balance"] - put_in), "as_of": first["as_of"], "exact": False,
+                    "estimated": True}
     distance = account_readings["as_of"].map(lambda day: abs((day - end).days))
     nearest = account_readings.loc[distance.idxmin()]
     if kind in config.INVESTMENT_KINDS:
         if distance.min() <= READING_WINDOW_DAYS:
-            return {"balance": cents(nearest["balance"]), "as_of": nearest["as_of"], "exact": True}
+            return {"balance": cents(nearest["balance"]), "as_of": nearest["as_of"], "exact": True, "estimated": False}
         earlier = account_readings[account_readings["as_of"] <= end]
         if earlier.empty:
             return None
         last = earlier.iloc[-1]
-        return {"balance": cents(last["balance"]), "as_of": last["as_of"], "exact": False}
+        return {"balance": cents(last["balance"]), "as_of": last["as_of"], "exact": False, "estimated": False}
     as_of = nearest["as_of"]
     if as_of <= end:
         between = account_rows.loc[(account_rows["date"] > as_of) & (account_rows["date"] <= end), "amount"].sum()
     else:
         between = -account_rows.loc[(account_rows["date"] > end) & (account_rows["date"] <= as_of), "amount"].sum()
-    return {"balance": cents(nearest["balance"] + between), "as_of": as_of, "exact": True}
+    return {"balance": cents(nearest["balance"] + between), "as_of": as_of, "exact": True, "estimated": False}
 
 
 def money_in(account_rows: pd.DataFrame, month: str) -> float:
@@ -394,25 +409,41 @@ def money_in(account_rows: pd.DataFrame, month: str) -> float:
     return cents(own["amount"].sum())
 
 
-def as_of_label(kind: str, as_of: date, exact: bool, month: str) -> str:
+def as_of_label(kind: str, as_of: date, exact: bool, month: str, estimated: bool = False) -> str:
     """How a month-end balance was known: the reading's day; "carried" after it for an older
-    investment reading; "from transactions" when a cash, card or loan reading was brought to the
-    month end by the transactions in between."""
+    investment reading; "est. from" it for an investment balance estimated back from a later
+    reading; "from transactions" when a cash, card or loan reading was brought to the month end by
+    the transactions in between."""
     day = f"{as_of:%b} {as_of.day}"
+    if estimated:
+        return f"est. from {day}"
     if kind in config.INVESTMENT_KINDS:
         return day if exact else f"{day}, carried"
     return day if as_of == month_end(month) else f"{day}, from transactions"
 
 
+def reach_dates(rows: pd.DataFrame) -> dict[str, date]:
+    """How far back each account's transactions reach: the earliest transaction from its
+    institution, since one export covers all of an institution's accounts (a Fidelity history file
+    holds every Fidelity account, even one with no activity). Accounts with none are left out."""
+    institutions = {key: spec["institution"] for key, spec in config.ACCOUNTS.items()}
+    earliest = rows.assign(institution=rows["account"].map(institutions)).groupby("institution")["date"].min()
+    return {key: earliest[institution] for key, institution in institutions.items() if institution in earliest}
+
+
 def month_end_balances(today: date | None = None, db_path: Path | None = None) -> tuple[list[str], dict[str, dict[str, dict]]]:
-    """Every account's balance at every month end before today, from the first month end a
-    reading stands for: the months, and {account: {month: month_end_balance}} with only the
-    months the account has a balance for. Both empty with no readings."""
+    """Every account's balance at every month end before today, from the first month end any
+    account has a balance for (a reading's, or earlier where transactions reach back from one):
+    the months, and {account: {month: month_end_balance}} with only the months the account has a
+    balance for. Both empty with no readings."""
     today = today or date.today()
     all_readings, all_rows = readings(db_path), balance_rows(db_path)
     if all_readings.empty:
         return [], {}
-    first = min(min(served_month(day), day.strftime("%Y-%m")) for day in all_readings["as_of"])
+    reach = reach_dates(all_rows)
+    starts = [min(served_month(day), day.strftime("%Y-%m")) for day in all_readings["as_of"]]
+    starts += [reach[key].strftime("%Y-%m") for key in set(all_readings["account"]) if key in reach]
+    first = min(starts)
     last = (today.replace(day=1) - pd.Timedelta(days=1)).strftime("%Y-%m")
     if first > last:
         return [], {}
@@ -421,25 +452,27 @@ def month_end_balances(today: date | None = None, db_path: Path | None = None) -
     for key, spec in config.ACCOUNTS.items():
         own_readings = all_readings[all_readings["account"] == key].reset_index(drop=True)
         own_rows = all_rows[all_rows["account"] == key]
-        found = {month: month_end_balance(spec["kind"], own_readings, own_rows, month) for month in months}
+        found = {month: month_end_balance(spec["kind"], own_readings, own_rows, month, reach.get(key)) for month in months}
         balances[key] = {month: found for month, found in found.items() if found}
-    return months, balances
+    shown = [month for month in months if any(month in by_month for by_month in balances.values())]
+    return (months[months.index(shown[0]):] if shown else []), balances
 
 
 def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
-    """Everything the Net worth tab shows, for the month ends before today from the first one a
-    reading stands for:
+    """Everything the Net worth tab shows, for the month ends before today from the first one any
+    account has a balance for:
 
     "months": those months; "by_kind": a table of each kind's total per month (debts negative);
     "total": net worth per month; "accounts": one row per account with a balance at the latest
-    month end (key, name, kind, balance, as_of, exact, change, money_in, growth; the last three
-    None when they can't be known); "latest" and "previous": those months; "change": net worth's
-    change since the previous month end; "market": the investment accounts' growth, summed, when
-    every one with a balance has it (else None); "you": the rest of the change.
+    month end (key, name, kind, balance, as_of, exact, estimated, change, money_in, growth; the
+    last three None when they can't be known); "estimated": the months whose net worth includes an
+    estimate; "latest" and "previous": those months; "change": net worth's change since the
+    previous month end; "market": the investment accounts' growth, summed, when every one with a
+    balance has it (else None); "you": the rest of the change.
     """
     today = today or date.today()
     empty = {"months": [], "by_kind": pd.DataFrame(), "total": pd.Series(dtype=float), "accounts": pd.DataFrame(),
-             "latest": None, "previous": None, "change": None, "market": None, "you": None}
+             "estimated": [], "latest": None, "previous": None, "change": None, "market": None, "you": None}
     months, balances = month_end_balances(today, db_path)
     if not months:
         return empty
@@ -451,6 +484,8 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
             by_kind.loc[month, config.ACCOUNTS[key]["kind"]] += found["balance"]
     by_kind = by_kind.loc[:, (by_kind != 0).any()].round(2) + 0.0
     total = (by_kind.sum(axis=1).round(2) + 0.0) if not by_kind.empty else pd.Series(0.0, index=months)
+    estimated = [month for month in months
+                 if any(by_month.get(month, {}).get("estimated") for by_month in balances.values())]
 
     latest, previous = months[-1], (months[-2] if len(months) > 1 else None)
     rows = []
@@ -465,16 +500,18 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
         if investment and before and now["exact"] and before["exact"]:
             growth = cents(now["balance"] - before["balance"] - put_in)
         rows.append({"key": key, "name": spec["name"], "kind": spec["kind"], "balance": now["balance"],
-                     "as_of": now["as_of"], "exact": now["exact"],
+                     "as_of": now["as_of"], "exact": now["exact"], "estimated": now["estimated"],
                      "change": cents(now["balance"] - before["balance"]) if before else None,
                      "money_in": put_in, "growth": growth})
-    accounts = pd.DataFrame(rows, columns=["key", "name", "kind", "balance", "as_of", "exact", "change", "money_in", "growth"])
+    accounts = pd.DataFrame(rows, columns=["key", "name", "kind", "balance", "as_of", "exact", "estimated", "change",
+                                           "money_in", "growth"])
     for column in ("change", "money_in", "growth"):  # None where a figure can't be known, never NaN
         accounts[column] = accounts[column].astype(object).where(accounts[column].notna(), None)
     change = cents(total[latest] - total[previous]) if previous else None
     growths = accounts.loc[accounts["kind"].isin(config.INVESTMENT_KINDS), "growth"]
     market = cents(growths.sum()) if change is not None and len(growths) and growths.notna().all() else None
-    return {"months": months, "by_kind": by_kind, "total": total, "accounts": accounts, "latest": latest,
+    return {"months": months, "by_kind": by_kind, "total": total, "accounts": accounts, "estimated": estimated,
+            "latest": latest,
             "previous": previous, "change": change, "market": market,
             "you": cents(change - market) if market is not None else None}
 

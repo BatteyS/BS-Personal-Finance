@@ -137,8 +137,8 @@ def line_accounts(balances: dict[str, dict[str, dict]], kind: str, end: str | No
             "name": spec["name"],
             "amount": None if now is None else queries.cents(sign * now["balance"]),
             "prior": None if before is None else queries.cents(sign * before["balance"]),
-            "as_of": queries.as_of_label(kind, now["as_of"], now["exact"], end) if now else "—",
-            "prior_as_of": queries.as_of_label(kind, before["as_of"], before["exact"], prior_end) if before else "—",
+            "as_of": queries.as_of_label(kind, now["as_of"], now["exact"], end, now["estimated"]) if now else "—",
+            "prior_as_of": queries.as_of_label(kind, before["as_of"], before["exact"], prior_end, before["estimated"]) if before else "—",
         })
     return pd.DataFrame(rows, columns=["name", "amount", "prior", "as_of", "prior_as_of"])
 

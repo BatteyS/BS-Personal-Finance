@@ -78,6 +78,9 @@ LOGO = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='10 -12 86 208' width='
         "<g fill='none' stroke-width='20'><path d='M22 28v156h28a34 34 0 0 0 0-68H22' stroke-linejoin='miter'/>"
         "<path d='M76.3 18.4A28 28 0 1 0 50 56a30 30 0 0 1 0 60' stroke-linecap='round' stroke-linejoin='round'/>"
         "</g></svg>") % theme_colors("primaryColor")
+# A click on the monogram opens the site, as it does in each of the site's apps. Streamlit opens
+# the link in a new tab with rel="noreferrer", so the page's address never reaches the site.
+SITE = "https://seanbattey.com"
 
 
 @st.cache_resource(show_spinner=False)
@@ -93,7 +96,7 @@ reason = phone.refusal(st.context.headers, phone.read_access())
 if reason:
     st.error(reason)
     st.stop()
-st.logo(LOGO, size="large")  # the top-left corner, where the site's header has it
+st.logo(LOGO, size="large", link=SITE)  # the top-left corner, where the site's header has it
 # The home-screen icon and full-screen mode, for "Add to Home Screen" on a phone. Streamlit owns
 # the page's <head>, so a zero-height component adds the tags to it.
 components.html("""<script>
@@ -552,20 +555,42 @@ def translucent(color: str, alpha: float = 0.45) -> str:
     return f"rgba({red},{green},{blue},{alpha})"
 
 
-def net_worth_chart(by_kind: pd.DataFrame, total: pd.Series) -> go.Figure:
+def estimate_runs(months: list[str], estimated: list[str]) -> list[tuple[int, int]]:
+    """The positions (first, last) of each run of consecutive months that include an estimate."""
+    runs: list[tuple[int, int]] = []
+    for index, month in enumerate(months):
+        if month not in estimated:
+            continue
+        if runs and runs[-1][1] == index - 1:
+            runs[-1] = (runs[-1][0], index)
+        else:
+            runs.append((index, index))
+    return runs
+
+
+def net_worth_chart(by_kind: pd.DataFrame, total: pd.Series, estimated: list[str] | None = None) -> go.Figure:
     """Net worth over the months: one stacked area per kind, assets above zero and debts below, and
-    the net worth line on top. One fixed color per kind, a legend, exact values on hover."""
+    the net worth line on top. One fixed color per kind, a legend, exact values on hover. Months
+    whose net worth includes an estimate sit in a shaded band labeled Estimated, with hollow
+    net worth markers."""
+    estimated = estimated or []
     labels = [f"{queries.month_label(month)[:3]} {month[2:4]}" for month in by_kind.index]
     figure = go.Figure()
+    for first, last in estimate_runs(list(by_kind.index), estimated):
+        figure.add_vrect(x0=first - 0.5, x1=last + 0.5, fillcolor=NEUTRAL, opacity=0.12, line_width=0, layer="below",
+                         annotation_text="Estimated", annotation_position="top left",
+                         annotation_font={"color": NEUTRAL, "size": 11})
     for kind in [kind for kind in KIND_COLORS if kind in by_kind.columns]:
         figure.add_scatter(name=KIND_LABELS[kind], x=labels, y=by_kind[kind], mode="lines+markers",
                            stackgroup="debts" if kind in config.DEBT_KINDS else "assets",
                            line={"width": 1, "color": KIND_COLORS[kind]}, marker={"size": 5},
                            fillcolor=translucent(KIND_COLORS[kind]),
                            hovertemplate=f"{KIND_LABELS[kind]}: %{{y:$,.0f}}<extra></extra>")
-    figure.add_scatter(name="Net worth", x=labels, y=total.values, mode="lines+markers",
-                       line={"color": NEUTRAL, "width": 3}, marker={"size": 9},
-                       hovertemplate="Net worth: %{y:$,.0f}<extra></extra>")
+    notes = [" (includes estimates)" if month in estimated else "" for month in by_kind.index]
+    figure.add_scatter(name="Net worth", x=labels, y=total.values, mode="lines+markers", customdata=notes,
+                       line={"color": NEUTRAL, "width": 3},
+                       marker={"size": 9, "symbol": ["circle-open" if note else "circle" for note in notes]},
+                       hovertemplate="Net worth: %{y:$,.0f}%{customdata}<extra></extra>")
     figure.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor="rgba(136,135,128,0.25)", zerolinecolor=NEUTRAL)
     figure.update_layout(height=320, margin={"l": 0, "r": 0, "t": 30, "b": 0}, hovermode="x unified",
                          legend={"orientation": "h", "y": 1.12, "x": 0})
@@ -574,7 +599,7 @@ def net_worth_chart(by_kind: pd.DataFrame, total: pd.Series) -> go.Figure:
 
 def as_of_label(row: dict, month: str) -> str:
     """queries.as_of_label for a row of the accounts table."""
-    return queries.as_of_label(row["kind"], row["as_of"], row["exact"], month)
+    return queries.as_of_label(row["kind"], row["as_of"], row["exact"], month, row["estimated"])
 
 
 def optional_money(value: float | None) -> str:
@@ -655,7 +680,8 @@ def net_worth_page() -> None:
                        help="The change that wasn't the market: money saved, spent and paid down.")
             market.metric("Market", queries.signed_money(worth["market"]),
                           help="The investment accounts' growth, beyond what was put into them.")
-        st.plotly_chart(net_worth_chart(worth["by_kind"], worth["total"]), width="stretch", config=CHART_CONFIG,
+        st.plotly_chart(net_worth_chart(worth["by_kind"], worth["total"], worth["estimated"]), width="stretch",
+                        config=CHART_CONFIG,
                         key="net_worth")
     table, form = st.columns([2, 1], gap="large")
     with table:
@@ -663,7 +689,9 @@ def net_worth_page() -> None:
             st.subheader(f"Accounts, end of {queries.month_label(worth['latest'])}")
             accounts_table(worth["accounts"], worth["latest"])
             st.caption("Change, money in and growth are since the month before. An investment account's growth is "
-                       "its change minus the money put in, and shows only between two real readings.")
+                       "its change minus the money put in, and shows only between two real readings. Before an "
+                       "account's first reading its balance is estimated: that reading less the money put in "
+                       "since, as if the market stood still.")
     with form:
         record_balance_form()
 

@@ -270,3 +270,100 @@ def test_nothing_recorded_means_nothing_to_show(tmp_path):
 ])
 def test_which_month_end_a_reading_stands_for(day, month):
     assert queries.served_month(day) == month
+
+
+# ---------------------------------------------------------------- reaching back before the first reading
+
+
+def test_a_cash_account_reaches_back_through_its_institutions_transactions(tmp_path):
+    path = database(tmp_path, rows=(
+        row("a", "fidelity_brokerage", "2026-08-03", 50.0, "investment", None, "DIVIDEND RECEIVED"),  # Fidelity's earliest
+        row("b", "fidelity_cash", "2026-09-10", -100.0, "dining", None, "CAFE"),
+        row("c", "fidelity_cash", "2026-10-12", 300.0, "income", None, "ACME PAYROLL"),
+    ), readings=(("fidelity_cash", "2026-11-02", 1000.0),))
+    worth = queries.net_worth(TODAY, path)
+    assert worth["months"] == ["2026-08", "2026-09", "2026-10"]
+    _, balances = queries.month_end_balances(TODAY, path)
+    cash = balances["fidelity_cash"]
+    assert {month: found["balance"] for month, found in cash.items()} == {
+        "2026-08": 800.0, "2026-09": 700.0, "2026-10": 1000.0}
+    assert all(found["exact"] and not found["estimated"] for found in cash.values())
+    assert worth["estimated"] == []
+
+
+def test_nothing_reaches_back_before_the_institutions_earliest_transaction(tmp_path):
+    path = database(tmp_path, rows=(
+        row("a", "bofa_checking", "2026-06-02", -10.0, "dining", None, "CAFE"),  # another bank's history
+        row("b", "fidelity_cash", "2026-09-10", -100.0, "dining", None, "CAFE"),
+    ), readings=(("fidelity_cash", "2026-11-02", 1000.0),))
+    months, balances = queries.month_end_balances(TODAY, path)
+    assert sorted(balances["fidelity_cash"]) == ["2026-09", "2026-10"]  # August's end isn't covered
+    assert months == ["2026-09", "2026-10"]  # and BofA, with no reading, has no balance to start earlier
+
+
+def test_without_transactions_a_reading_reaches_back_only_its_week(tmp_path):
+    path = database(tmp_path, readings=(("fidelity_roth", "2026-11-02", 7000.0), ("amex", "2026-11-20", -300.0)))
+    months, balances = queries.month_end_balances(date(2026, 11, 25), path)
+    assert months == ["2026-10"] and list(balances["fidelity_roth"]) == ["2026-10"] and balances["amex"] == {}
+
+
+def test_before_its_first_reading_an_investment_balance_is_an_estimate(tmp_path):
+    path = database(tmp_path, rows=(
+        row("t1", "fidelity_cash", "2026-09-15", -600.0, "transfer", "t2"),
+        row("t2", "fidelity_brokerage", "2026-09-15", 600.0, "transfer", "t1"),
+        row("p", "fidelity_401k", "2026-10-10", 500.0, "retirement", None, "CONTRIBUTIONS"),
+        row("m", "fidelity_401k", "2026-10-10", 50.0, "employer_match", None, "EMPLOYER CONTRIBUTION"),
+        row("d", "fidelity_brokerage", "2026-10-20", 20.0, "investment", None, "DIVIDEND RECEIVED"),  # the market's
+        row("b", "fidelity_brokerage", "2026-10-21", -300.0, "investment", None, "YOU BOUGHT"),  # not money in
+        row("t3", "fidelity_brokerage", "2026-11-01", -200.0, "transfer", "t4"),  # taken out, before the reading
+        row("t4", "bofa_checking", "2026-11-01", 200.0, "transfer", "t3"),
+    ), readings=(("fidelity_brokerage", "2026-11-02", 5000.0), ("fidelity_401k", "2026-11-02", 9000.0),
+                 ("fidelity_cash", "2026-11-02", 1000.0)))
+    worth = queries.net_worth(TODAY, path)
+    assert worth["months"] == ["2026-09", "2026-10"]
+    _, balances = queries.month_end_balances(TODAY, path)
+    september = balances["fidelity_brokerage"]["2026-09"]
+    # 5,000 less what came in after September 30: nothing in October, 200 taken out in November
+    assert september == {"balance": 5200.0, "as_of": date(2026, 11, 2), "exact": False, "estimated": True}
+    assert balances["fidelity_401k"]["2026-09"]["balance"] == 8450.0  # less October's 500 and 50
+    assert balances["fidelity_brokerage"]["2026-10"]["exact"]  # the reading on the 2nd stands for October
+    assert worth["estimated"] == ["2026-09"]
+    assert worth["total"]["2026-09"] == 5200.0 + 8450.0 + 1000.0
+    brokerage = account_row(worth, "fidelity_brokerage")
+    assert brokerage["growth"] is None and worth["market"] is None  # never growth from an estimate
+    assert queries.as_of_label("brokerage", september["as_of"], False, "2026-09", True) == "est. from Nov 2"
+
+
+def test_an_investment_account_with_no_activity_is_estimated_at_its_reading(tmp_path):
+    path = database(tmp_path, rows=(row("a", "fidelity_cash", "2026-09-10", -100.0, "dining", None, "CAFE"),),
+                    readings=(("fidelity_roth", "2026-11-02", 7000.0),))
+    _, balances = queries.month_end_balances(TODAY, path)
+    assert balances["fidelity_roth"]["2026-09"] == {"balance": 7000.0, "as_of": date(2026, 11, 2), "exact": False,
+                                                    "estimated": True}
+
+
+def test_a_late_first_reading_is_estimated_back_to_the_month_before(tmp_path):
+    path = database(tmp_path, rows=(row("a", "fidelity_brokerage", "2026-10-03", 100.0),),
+                    readings=(("fidelity_brokerage", "2026-11-20", 3000.0),))
+    worth = queries.net_worth(date(2026, 11, 25), path)
+    assert worth["months"] == ["2026-10"] and worth["estimated"] == ["2026-10"]
+    brokerage = account_row(worth, "fidelity_brokerage")
+    assert (brokerage["balance"], brokerage["estimated"], brokerage["exact"]) == (3000.0, True, False)
+
+
+def test_the_tab_marks_estimates_in_the_chart_and_the_table(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    path = database(tmp_path, rows=(row("a", "fidelity_brokerage", "2026-08-03", 100.0),),
+                    readings=(("fidelity_brokerage", "2026-11-20", 3000.0),))
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(config, "RULES_PATH", tmp_path / "rules.csv")
+    monkeypatch.setattr(config, "EXPORTS_DIR", tmp_path / "exports")
+    monkeypatch.setattr(config, "BUDGET_PATH", tmp_path / "budget.toml")
+    monkeypatch.setattr(queries, "date", type("Today", (date,), {"today": staticmethod(lambda: date(2026, 11, 25))}))
+    page = AppTest.from_file(str(Path(__file__).resolve().parent.parent / "dashboard.py"), default_timeout=60).run()
+    assert not page.exception
+    worth = page.tabs[1]
+    chart = next(element for element in worth.get("plotly_chart"))
+    assert '"Estimated"' in chart.proto.spec and "circle-open" in chart.proto.spec
+    assert worth.table[0].value.set_index("Account").loc["Individual", "As of"] == "est. from Nov 20"

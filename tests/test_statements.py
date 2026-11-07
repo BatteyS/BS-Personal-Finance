@@ -184,10 +184,25 @@ def test_the_prior_column_is_the_previous_period_end_with_the_change(tmp_path):
 
 
 def test_a_period_end_without_balances_says_so(tmp_path):
-    path = database(tmp_path, months=("2026-09", "2026-10"), readings=OCTOBER)
+    # The spending rows are on the Amex, so with an Amex reading its transactions would reach back
+    # to September's end; without one, nothing does.
+    readings = tuple(reading for reading in OCTOBER if reading[0] != "amex")
+    path = database(tmp_path, months=("2026-09", "2026-10"), readings=readings)
     [september] = [period for period in queries.periods("Month", TODAY, path) if period["key"] == "2026-09"]
     sheet = statements.balance_sheet(september, TODAY, path)
     assert sheet["end"] is None and sheet["lines"]["amount"].isna().all()
+
+
+def test_the_balance_sheet_labels_an_estimate(tmp_path):
+    path = database(tmp_path, months=("2026-09", "2026-10"), readings=OCTOBER)
+    with closing(db.connect(path)) as connection, connection:  # Fidelity history reaching back into September
+        connection.execute("INSERT INTO transactions (id, account, date, amount, description, category, month, imported_at)"
+                           " VALUES ('div', 'fidelity_brokerage', '2026-09-20', 5.0, 'DIVIDEND RECEIVED', 'investment',"
+                           " '2026-09', 'test')")
+    sheet = statements.balance_sheet(october(path), TODAY, path)
+    brokerage = sheet["accounts"]["Investments"].set_index("name").loc["Individual"]
+    assert (brokerage["prior"], brokerage["prior_as_of"]) == (5000.0, "est. from Oct 31")
+    assert (brokerage["amount"], brokerage["as_of"]) == (5000.0, "Oct 31")
 
 
 def test_a_quarter_is_as_of_its_last_month_end(tmp_path):
