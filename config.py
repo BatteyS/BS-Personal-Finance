@@ -1,8 +1,9 @@
-"""What changes once a year, where the data lives, and which accounts exist.
+"""What changes once a year, where the data lives, which accounts exist and the categories.
 
 The other modules read these values. Everything about one person's money (their accounts, the
 transfers between them, their pay schedule) is read from accounts.toml in the data folder, or from
-accounts.example.toml until that exists, so this file holds nothing personal. See docs/spec.md, Config.
+accounts.example.toml until that exists, and their own categories from categories.toml, so this
+file holds nothing personal. See docs/spec.md, Config.
 """
 
 import os
@@ -19,6 +20,7 @@ BUDGET_PATH = DATA_DIR / "budget.toml"  # copied from budget.example.toml and fi
 ACCOUNTS_PATH = DATA_DIR / "accounts.toml"  # copied from accounts.example.toml and made your own
 ACCOUNTS_EXAMPLE = Path(__file__).resolve().parent / "accounts.example.toml"
 FORMATS_PATH = DATA_DIR / "formats.toml"  # layouts taught on the page, for institutions with no built-in parser
+CATEGORIES_PATH = DATA_DIR / "categories.toml"  # categories of your own, added on the page
 
 # IRS caps by year. Add next year's row when the IRS announces it
 # (401(k) and IRA in October or November, HSA in May).
@@ -140,8 +142,74 @@ INVESTMENT_ACTIONS = [
 INVESTMENT_INCOME = ["DIVIDEND", "CAPITAL GAIN", "INTEREST"]
 PRIOR_YEAR_MARKER = "PRIOR YEAR"  # an IRA or HSA contribution for the previous tax year
 
-SPENDING_CATEGORIES = [
+# The categories every copy has. Spending ones count as spending; "income" counts as income; the
+# rest come from passes 1 and 2 and count as neither.
+BUILT_IN_SPENDING = [
     "housing", "groceries", "dining", "gas", "transit", "utilities",
     "subscriptions", "travel", "health", "shopping", "going out", "hobbies", "uncategorized",
 ]
 OTHER_CATEGORIES = ["income", "retirement", "employer_match", "investment", "transfer"]
+# Categories of your own, added on the page, are each spending or income.
+CATEGORY_KINDS = ("spending", "income")
+CATEGORY_NAME = re.compile(r"^[a-z][a-z0-9 &'/-]*$")
+RESERVED_CATEGORIES = {"total"}  # Budget vs actual's last row
+
+
+class CategoriesError(Exception):
+    """categories.toml can't be used. The message names the problem."""
+
+
+def read_categories(path: Path) -> dict[str, list[str]]:
+    """Your own categories from a categories file, {"spending": [...], "income": [...]} in file
+    order; both empty when there is no file. Names are lowercased with their spaces collapsed, as
+    rules.csv's are. Raises CategoriesError naming the first problem."""
+    if not path.exists():
+        return {kind: [] for kind in CATEGORY_KINDS}
+    try:
+        with path.open("rb") as file:
+            raw = tomllib.load(file)
+    except tomllib.TOMLDecodeError as error:
+        raise CategoriesError(f"{path.name} isn't valid TOML: {error}") from None
+    taken = set(BUILT_IN_SPENDING) | set(OTHER_CATEGORIES) | RESERVED_CATEGORIES
+    yours: dict[str, list[str]] = {}
+    for kind in CATEGORY_KINDS:
+        names = raw.get(kind, [])
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise CategoriesError(f"{path.name}: {kind} must be a list of names, like {kind} = [\"pets\"]")
+        yours[kind] = []
+        for name in (" ".join(name.split()).lower() for name in names):
+            if not CATEGORY_NAME.match(name) or len(name) > 30:
+                raise CategoriesError(f"{path.name}: {name!r} can't be a category name: up to 30 letters, digits, "
+                                      "spaces and & ' / -, starting with a letter")
+            if name in taken:
+                raise CategoriesError(f"{path.name}: {name!r} is already a category")
+            taken.add(name)
+            yours[kind].append(name)
+    return yours
+
+
+def with_yours(yours: dict[str, list[str]]) -> tuple[list[str], list[str]]:
+    """The spending and income categories with your own added: yours before uncategorized, which
+    stays last, and after income."""
+    return [*BUILT_IN_SPENDING[:-1], *yours["spending"], "uncategorized"], ["income", *yours["income"]]
+
+
+YOUR_CATEGORIES = read_categories(CATEGORIES_PATH)
+# What counts as spending (the ring, Budget vs actual, expenses) and what counts as income.
+SPENDING_CATEGORIES, INCOME_CATEGORIES = with_yours(YOUR_CATEGORIES)
+
+
+def all_categories() -> list[str]:
+    """Every category a rule can name: spending, then income, then the rest."""
+    return list(dict.fromkeys([*SPENDING_CATEGORIES, *INCOME_CATEGORIES, *OTHER_CATEGORIES]))
+
+
+def reload_categories() -> None:
+    """Read categories.toml again, after the page (or a hand edit) changed it. The lists above are
+    updated in place, so every module and picker that reads them sees the change without a restart."""
+    yours = read_categories(CATEGORIES_PATH)
+    spending, income = with_yours(yours)
+    YOUR_CATEGORIES.clear()
+    YOUR_CATEGORIES.update(yours)
+    SPENDING_CATEGORIES[:] = spending
+    INCOME_CATEGORIES[:] = income

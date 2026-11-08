@@ -9,10 +9,12 @@ built-in parsers; any other institution's CSV comes in through a layout taught o
 OFX/QFX files through the account they name (formats.py, ofx.py). See docs/spec.md: Bank exports,
 Row ids and Data model.
 
-Two files also carry balances, kept as readings in the balances table (see docs/spec.md, Net
+Some files also carry balances, kept as readings in the balances table (see docs/spec.md, Net
 worth): Bank of America's running balance gives one reading per day in the file, and a Fidelity
 positions download gives every Fidelity account's value on the day it was downloaded, and no
-transactions at all.
+transactions at all. A positions download, and an OFX/QFX investment statement that lists its
+positions, also say what each account holds: those holdings go in the holdings table, and the
+account's reading is their sum, so the two always agree.
 
 The parsers were written against the layouts documented in the spec, before any samples existed.
 The scrubbed samples are the truth: check each parser against them.
@@ -153,6 +155,19 @@ def parse_amount(text: str, row_number: int) -> float | None:
     return round(-value if negative else value, 2)
 
 
+def parse_number(text: str) -> float | None:
+    """A cell like "12.345", "$1,234.5678" or "(3.00)" at full precision, for shares and prices;
+    None for an empty cell or one that isn't a number ("--", "n/a"), since such a cell is a figure
+    the file doesn't know rather than a mistake."""
+    cleaned = text.strip().replace("$", "").replace(",", "")
+    negative = cleaned.startswith("(") and cleaned.endswith(")")
+    try:
+        value = float(cleaned[1:-1] if negative else cleaned)
+    except ValueError:
+        return None
+    return -value if negative else value
+
+
 def data_rows(
     rows: list[list[str]], header_index: int, date_column: int, amount_column: int
 ) -> Iterator[tuple[int, list[str], float]]:
@@ -267,16 +282,25 @@ PARSERS = {"fidelity": parse_fidelity, "bofa": parse_bofa, "amex": parse_amex}
 
 
 def parse_positions(rows: list[list[str]], header_index: int) -> tuple[list[dict], int, list[str]]:
-    """A Fidelity positions download: one reading per account, the sum of its holdings' Current
-    value. Returns the readings (account and balance; the day is added by the caller), how many
-    holding rows were read, and the Account names that match none of your fidelity_labels, which
-    are skipped rather than guessed."""
+    """A Fidelity positions download: one holding per row with an Account name and a Current
+    value, the core cash position and any pending activity included. Returns the holdings
+    ({account, symbol, description, quantity, price, value, cost_basis}; the day is added by the
+    caller), how many rows were read, and the Account names that match none of your
+    fidelity_labels, which are skipped rather than guessed.
+
+    Only Account name and Current value are needed; the other columns are read where the file has
+    them, and a cell that isn't a number ("--") is a figure the file doesn't know. The asterisks
+    Fidelity puts after the core position's symbol (SPAXX**) are dropped."""
     columns = column_positions(rows[header_index])
-    totals: dict[str, float] = {}
+
+    def text(row: list[str], name: str) -> str:
+        return cell(row, columns[name]).strip() if name in columns else ""
+
+    holdings: list[dict] = []
     skipped: list[str] = []
     read = 0
     for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
-        label, value_text = cell(row, columns["account name"]).strip(), cell(row, columns["current value"]).strip()
+        label, value_text = text(row, "account name"), text(row, "current value")
         if not label or not value_text:
             continue  # blank lines and the disclaimer block
         value = parse_amount(value_text, number)
@@ -286,8 +310,41 @@ def parse_positions(rows: list[list[str]], header_index: int) -> tuple[list[dict
             if label not in skipped:
                 skipped.append(label)
             continue
-        totals[account] = totals.get(account, 0.0) + value
-    return [{"account": account, "balance": round(total, 2) + 0.0} for account, total in totals.items()], read, skipped
+        cost_basis = parse_number(text(row, "cost basis total"))
+        holdings.append({
+            "account": account, "symbol": text(row, "symbol").rstrip("*"), "description": text(row, "description"),
+            "quantity": parse_number(text(row, "quantity")), "price": parse_number(text(row, "last price")),
+            "value": value, "cost_basis": None if cost_basis is None else round(cost_basis, 2) + 0.0,
+        })
+    return holdings, read, skipped
+
+
+def holding_readings(holdings: list[dict]) -> list[dict]:
+    """One reading per account and day: the sum of its holdings' value, so a reading that comes
+    with holdings always equals them."""
+    totals: dict[tuple[str, str], float] = {}
+    for holding in holdings:
+        key = (holding["account"], holding["as_of"])
+        totals[key] = totals.get(key, 0.0) + holding["value"]
+    return [{"account": account, "as_of": as_of, "balance": round(total, 2) + 0.0}
+            for (account, as_of), total in totals.items()]
+
+
+def write_holdings(connection: sqlite3.Connection, holdings: list[dict], source: str, recorded_at: str) -> None:
+    """Store holdings ({account, as_of, symbol, ...}) in the order given. Each account and day's
+    holdings replace any stored for it: a positions download is the whole of what the account
+    held that day."""
+    days = list(dict.fromkeys((holding["account"], holding["as_of"]) for holding in holdings))
+    for account, as_of in days:
+        connection.execute("DELETE FROM holdings WHERE account = ? AND as_of = ?", (account, as_of))
+        own = [holding for holding in holdings if (holding["account"], holding["as_of"]) == (account, as_of)]
+        connection.executemany(
+            "INSERT INTO holdings (account, as_of, line, symbol, description, quantity, price, value, cost_basis,"
+            " source, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(account, as_of, line, holding["symbol"], holding["description"], holding["quantity"], holding["price"],
+              holding["value"], holding["cost_basis"], source, recorded_at)
+             for line, holding in enumerate(own, start=1)],
+        )
 
 
 def positions_date(file_name: str, rows: list[list[str]], header_index: int) -> str | None:
@@ -347,12 +404,14 @@ def parse_layout(rows: list[list[str]], header_index: int, layout: dict) -> list
     return parsed
 
 
-def parse_ofx(text: str, matches: list[dict]) -> list[dict]:
-    """An OFX/QFX file: each statement's transactions, on the account its number ends like."""
+def parse_ofx(text: str, matches: list[dict], today: str) -> tuple[list[dict], list[dict]]:
+    """An OFX/QFX file: each statement's transactions, on the account its number ends like, and
+    the holdings of each investment statement that lists its positions, as of its DTASOF (or
+    `today`, an ISO date, without one)."""
     found = ofx.statements(text)
     if not found:
         raise LoadError("it looks like OFX but holds no statement")
-    parsed = []
+    parsed, holdings = [], []
     for statement in found:
         account = formats.ofx_account(statement["account_number"], matches)
         if account is None:
@@ -361,7 +420,9 @@ def parse_ofx(text: str, matches: list[dict]) -> list[dict]:
                                 "ofx", ends)
         parsed += [{"account": account, "date": row["date"], "month": row["date"][:7], "amount": row["amount"],
                     "description": row["description"]} for row in statement["transactions"]]
-    return parsed
+        holdings += [{**holding, "account": account, "as_of": statement["as_of"] or today}
+                     for holding in statement["positions"] or []]
+    return parsed, holdings
 
 
 def row_ids(transactions: list[dict]) -> list[str]:
@@ -402,9 +463,14 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
     except OSError as error:
         raise LoadError(f"can't read it: {error}") from None
     readings: list[dict] = []
-    extra: dict = {}  # what the page says about a positions file, beyond its imports row
+    holdings: list[dict] = []
+    extra: dict = {}  # what the page says about a file's holdings, beyond its imports row
     if ofx.is_ofx(text):
-        institution, transactions = "ofx", parse_ofx(text, known["ofx"])
+        institution = "ofx"
+        transactions, holdings = parse_ofx(text, known["ofx"], imported_at[:10])
+        readings = holding_readings(holdings)
+        if readings:
+            extra = {"as_of": max(reading["as_of"] for reading in readings), "accounts": len(readings)}
     else:
         try:
             rows = list(csv.reader(io.StringIO(text, newline="")))
@@ -415,10 +481,11 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
             transactions = parse_layout(rows, header_index, layout)
         elif institution == POSITIONS:
             transactions = []
-            readings, read, skipped = parse_positions(rows, header_index)
+            holdings, read, skipped = parse_positions(rows, header_index)
             as_of = positions_date(path.name, rows, header_index) or imported_at[:10]
-            for reading in readings:
-                reading["as_of"] = as_of
+            for holding in holdings:
+                holding["as_of"] = as_of
+            readings = holding_readings(holdings)
             extra = {"as_of": as_of, "accounts": len(readings), "skipped": skipped}
         else:
             transactions = PARSERS[institution](rows, header_index)
@@ -428,6 +495,7 @@ def load_file(path: Path, connection: sqlite3.Connection, imported_at: str, know
     with connection:  # one database transaction per file: all of it or none of it
         new = insert_new(connection, transactions, ids, imported_at)
         written, unchanged = write_readings(connection, readings, institution.replace(" ", "_"), imported_at)
+        write_holdings(connection, holdings, institution.replace(" ", "_"), imported_at)
         record = {
             "file": path.name,
             "institution": institution,

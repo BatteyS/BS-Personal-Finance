@@ -5,8 +5,8 @@ method, reconciled to the balance sheet. See docs/spec.md, Finance mode.
 A statement is a DataFrame of lines: label, level (section, line, subtotal, total), amount, prior
 and change, where an amount that can't be known is None, shown as a dash. Every figure here equals
 its Personal-mode counterpart: the balance sheet is Net worth's month-end balances, regrouped, and
-the income statement's salary and expenses are This month's Income and Spending. Nothing in this
-module touches Streamlit.
+the income statement's salary (with your own income categories) and expenses are This month's
+Income and Spending. Nothing in this module touches Streamlit.
 """
 
 from __future__ import annotations
@@ -155,18 +155,21 @@ def category_label(category: str) -> str:
 
 def period_figures(months: list[str], data_months: set[str], db_path: Path | None = None) -> dict | None:
     """What the income statement and cash flow read from a period's transactions, or None when no
-    month of the period has any: salary, employer contributions, investment income (and the part of
-    it kept in investment accounts), expenses by category (net, positive, nonzero), the totals and
-    net income, contributions by cap, the cash legs to investment and loan accounts, and the
-    non-cash investing memo."""
+    month of the period has any: salary, your own income categories (nonzero), employer
+    contributions, investment income (and the part of it kept in investment accounts), expenses by
+    category (net, positive, nonzero), the totals and net income, contributions by cap, the cash
+    legs to investment and loan accounts, and the non-cash investing memo."""
     if not any(month in data_months for month in months):
         return None
     first, last = months[0], months[-1]
     totals = queries.category_totals(first, last, db_path)
     income = queries.investment_income(first, last, db_path)
     expenses = queries.spending_between(first, last, db_path)
+    yours = pd.Series({name: queries.cents(totals.get(name, 0.0)) for name in config.YOUR_CATEGORIES["income"]},
+                      dtype=float)
     figures = {
         "salary": queries.cents(totals.get("income", 0.0)),
+        "other_income": yours[yours != 0],
         "employer": queries.cents(totals.get("employer_match", 0.0)),
         "investment_income": queries.cents(income["amount"].sum()),
         "kept": queries.cents(income.loc[income["kind"].isin(config.INVESTMENT_KINDS), "amount"].sum()),
@@ -175,7 +178,8 @@ def period_figures(months: list[str], data_months: set[str], db_path: Path | Non
         "legs": queries.cash_legs(first, last, db_path),
         "non_cash": queries.non_cash_investing(first, last, db_path),
     }
-    figures["total_income"] = queries.cents(figures["salary"] + figures["employer"] + figures["investment_income"])
+    figures["total_income"] = queries.cents(figures["salary"] + figures["other_income"].sum() + figures["employer"]
+                                            + figures["investment_income"])
     figures["total_expenses"] = queries.cents(figures["expenses"].sum())
     figures["net_income"] = queries.cents(figures["total_income"] - figures["total_expenses"])
     return figures
@@ -200,6 +204,20 @@ def spent(figures: dict | None, category: str) -> float | None:
 def contributed(figures: dict | None, cap: str) -> float | None:
     """A period's contributions toward one cap, zero or None as spent is."""
     return None if figures is None else queries.cents(figures["contributions"].get(cap, 0.0))
+
+
+def income_lines(now: dict | None, prior: dict | None) -> list[dict]:
+    """One line per income category of your own with income in either period, in the order you
+    added them; Salary and wages is the built-in income category's."""
+    def received(figures: dict | None, category: str) -> float | None:
+        return None if figures is None else queries.cents(figures["other_income"].get(category, 0.0))
+
+    present = set()
+    for figures in (now, prior):
+        if figures is not None:
+            present.update(figures["other_income"].index)
+    return [line(category_label(category), "line", received(now, category), received(prior, category))
+            for category in config.YOUR_CATEGORIES["income"] if category in present]
 
 
 def expense_lines(now: dict | None, prior: dict | None) -> list[dict]:
@@ -230,6 +248,7 @@ def income_statement(period: dict, db_path: Path | None = None) -> dict:
 
     lines = [line("Income", "section"),
              line("Salary and wages", "line", *pair(now, prior, "salary")),
+             *income_lines(now, prior),
              line("Employer retirement contributions", "line", *pair(now, prior, "employer")),
              line("Investment income", "line", *pair(now, prior, "investment_income")),
              line("Total income", "subtotal", *pair(now, prior, "total_income")),

@@ -47,8 +47,23 @@ CREATE TABLE IF NOT EXISTS balances (
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (account, as_of)
 );
+
+CREATE TABLE IF NOT EXISTS holdings (
+    account TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    description TEXT NOT NULL,
+    quantity REAL,
+    price REAL,
+    value REAL NOT NULL,
+    cost_basis REAL,
+    source TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (account, as_of, line)
+);
 """
-TABLES = {"transactions", "accounts", "imports", "balances"}
+TABLES = {"transactions", "accounts", "imports", "balances", "holdings"}
 
 
 # How long a connection waits for another one's write (an import, a re-run) before giving up.

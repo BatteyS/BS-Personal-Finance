@@ -297,13 +297,15 @@ def uncategorized(month: str, db_path: Path | None = None) -> pd.DataFrame:
 
 
 def income_and_spending(db_path: Path | None = None) -> pd.DataFrame:
-    """Income and total spending (net, all spending categories) for every month, indexed by month."""
-    placeholders = ",".join("?" for _ in config.SPENDING_CATEGORIES)
+    """Income (every income category, yours included) and total spending (net, all spending
+    categories) for every month, indexed by month."""
+    income = ",".join("?" for _ in config.INCOME_CATEGORIES)
+    spending = ",".join("?" for _ in config.SPENDING_CATEGORIES)
     frame = read(
-        "SELECT month, SUM(CASE WHEN category = 'income' THEN amount ELSE 0 END) AS income,"
-        f" -SUM(CASE WHEN category IN ({placeholders}) THEN amount ELSE 0 END) AS spending"
+        f"SELECT month, SUM(CASE WHEN category IN ({income}) THEN amount ELSE 0 END) AS income,"
+        f" -SUM(CASE WHEN category IN ({spending}) THEN amount ELSE 0 END) AS spending"
         " FROM transactions GROUP BY month",
-        tuple(config.SPENDING_CATEGORIES),
+        (*config.INCOME_CATEGORIES, *config.SPENDING_CATEGORIES),
         db_path,
     )
     return frame.set_index("month").round(2) + 0.0
@@ -519,6 +521,42 @@ def net_worth(today: date | None = None, db_path: Path | None = None) -> dict:
             "latest": latest,
             "previous": previous, "change": change, "market": market,
             "you": cents(change - market) if market is not None else None}
+
+
+HOLDING_COLUMNS = ["key", "as_of", "symbol", "description", "quantity", "price", "value", "cost_basis", "gain"]
+
+
+def holdings(accounts: pd.DataFrame, db_path: Path | None = None) -> pd.DataFrame:
+    """What each investment account in net_worth's accounts table held: the holdings recorded with
+    the reading its balance is (a real one or a carried one), so an account's holdings add up to
+    its balance. An estimated balance has none, since it comes from a later reading less the money
+    put in since; nor does a typed balance. Cash accounts are left out: their balance is brought to
+    the month end by transactions, so a positions download's money-market line wouldn't match it.
+
+    One row per holding (key, as_of, symbol, description, quantity, price, value, cost_basis and
+    gain, which is value less cost basis), accounts in the table's order and each one's largest
+    holding first. Quantity, price, cost basis and gain are None where the file had no figure.
+    """
+    if accounts.empty:
+        return pd.DataFrame(columns=HOLDING_COLUMNS)
+    shown = accounts[accounts["kind"].isin(config.INVESTMENT_KINDS) & ~accounts["estimated"].astype(bool)]
+    if shown.empty:
+        return pd.DataFrame(columns=HOLDING_COLUMNS)
+    keys = shown["key"].tolist()
+    stored = read(f"SELECT account AS key, as_of, line, symbol, description, quantity, price, value, cost_basis"
+                  f" FROM holdings WHERE account IN ({', '.join('?' for _ in keys)})", tuple(keys), db_path)
+    stored["as_of"] = pd.to_datetime(stored["as_of"]).dt.date
+    held = stored.merge(shown[["key", "as_of"]], on=["key", "as_of"])
+    if held.empty:
+        return pd.DataFrame(columns=HOLDING_COLUMNS)
+    for column in ("quantity", "price", "cost_basis"):  # a column of nothing but NULLs reads as None, not NaN
+        held[column] = pd.to_numeric(held[column]).astype(float)
+    held["gain"] = (held["value"] - held["cost_basis"]).round(2) + 0.0
+    held["order"] = held["key"].map({key: index for index, key in enumerate(keys)})
+    held = held.sort_values(["order", "value", "line"], ascending=[True, False, True]).reset_index(drop=True)
+    for column in ("quantity", "price", "cost_basis", "gain"):  # None where the file had no figure, never NaN
+        held[column] = held[column].astype(object).where(held[column].notna(), None)
+    return held[HOLDING_COLUMNS]
 
 
 # ---------------------------------------------------------------- periods, for Finance mode

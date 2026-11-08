@@ -126,6 +126,13 @@ def test_an_overspent_budget_has_a_negative_surplus(tmp_path):
         ([*LINES, ("Surplus", "Second surplus", "Surplus", 'from = "surplus"')], BUDGET, "exactly one"),
         ([(g, i, c, a.replace("CTA 30-day pass", "Metra")) for g, i, c, a in LINES], BUDGET, "covers must name"),
         (LINES, BUDGET.replace("[[0, 0.10]", "[[100, 0.10]"), "starting at"),
+        (LINES, BUDGET.replace("[10_000, 0.20]", "[0, 0.20]"), "from the lowest up"),
+        (LINES, BUDGET.replace("[10_000, 0.20]", "[10_000, 20]"), "rate is a fraction"),
+        (LINES, BUDGET.replace("salary = 60_000", 'salary = "60k"'), r"\[income\] salary must be a number"),
+        (LINES, BUDGET.replace("roth_ira = 6_000", "roth_ira = -1"), "zero or more"),
+        (LINES, BUDGET.replace("medicare_rate = 0.0145", "medicare_rate = 1.45"), "medicare_rate is a fraction"),
+        (LINES, BUDGET.replace("employer = 1_000", "employer = 5_000"), "employer can't be more than the limit"),
+        ([*LINES, ("Food", "Coffee", "Necessary", 'monthly = "five"')], BUDGET, "monthly must be a number"),
         (LINES, BUDGET + "\nnot toml at all", "isn't valid TOML"),
     ],
 )

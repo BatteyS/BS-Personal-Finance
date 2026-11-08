@@ -11,7 +11,10 @@ Three parts, all on the Mac:
     it, the page stays up.
   * `tailscale serve` gives the Mac an HTTPS address on your tailnet, which only your own
     devices can open, and forwards it to the page, which still listens on the Mac alone.
-    Tailscale names the account asking in a Tailscale-User-Login header.
+    Tailscale names the account asking in a Tailscale-User-Login header. The page keeps the
+    address on itself, whatever port it runs on: whoever started it (the Desktop app, the
+    LaunchAgent, Flightdeck or a terminal), a running page points the address at its own port
+    when it forwards to one nothing listens on (follow, below).
   * data/phone.json records the Mac's address and the Tailscale login set up here. The page
     answers a forwarded request only for that login (refusal, below).
 
@@ -25,13 +28,17 @@ import json
 import os
 import plistlib
 import shutil
+import re
+import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
 
 import config
+import icon
 
 ROOT = Path(__file__).resolve().parent
 PORT = 8501
@@ -41,6 +48,8 @@ LOGIN_VARIABLE = "FINANCE_TAILSCALE_LOGIN"  # a server's stand-in for phone.json
 LOG = Path.home() / "Library" / "Logs" / "Personal Finance.log"
 TAILSCALE_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 PROTECTED = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"]
+FOLLOW_EVERY = 60  # seconds between a running page's checks of where its address forwards
+LOOPBACK = re.compile(r"http://(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)/?")  # a proxy to a port on this Mac
 
 
 def say(text: str = "") -> None:
@@ -183,13 +192,55 @@ def serve(cli: str, port: int = PORT) -> bool:
         return False
 
 
-def served(cli: str, port: int = PORT) -> bool | None:
-    """Whether Tailscale forwards this Mac's address to the page, or None when it can't say."""
+def serve_config(cli: str) -> dict | None:
+    """What Tailscale serves (`tailscale serve status --json`), or None when it can't say."""
     try:
         result = subprocess.run([cli, "serve", "status", "--json"], capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
+        return json.loads(result.stdout or "{}") if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    return f"127.0.0.1:{port}" in (result.stdout or "") if result.returncode == 0 else None
+
+
+def root_handler(config: dict, host: str) -> dict:
+    """What Tailscale does with the root of this Mac's address, `https://<host>/`: HTTPS on 443,
+    path /. Every other path and port, such as the job search tool's on 8443, isn't the page's."""
+    web = next((site for name, site in (config.get("Web") or {}).items() if name.lower() == f"{host}:443"), {})
+    return (web.get("Handlers") or {}).get("/") or {}
+
+
+def forwarded_port(config: dict, host: str) -> int | None:
+    """The port on this Mac that Tailscale forwards the address's root to, or None when it forwards
+    it to none (nothing served, a folder, a path, another machine)."""
+    found = LOOPBACK.fullmatch(root_handler(config, host).get("Proxy") or "")
+    return int(found.group(1)) if found else None
+
+
+def funnel_on(config: dict, host: str) -> bool:
+    """Whether Funnel puts the address on the internet. The page never touches it then: a request
+    from the internet carries no Tailscale-User-Login, which the guard reads as the Mac's own."""
+    return any(on and name.lower() == f"{host}:443" for name, on in (config.get("AllowFunnel") or {}).items())
+
+
+def listening(port: int) -> bool:
+    """Whether anything on this Mac takes a connection on `port`: a page, or any other program.
+    Only a refused connection says nothing is there."""
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=2).close()
+        return True
+    except ConnectionRefusedError:
+        return False
+    except OSError:
+        return True
+
+
+def point(cli: str, port: int) -> bool:
+    """Forward the address's root to `port`, on the tailnet alone, leaving every other path and
+    port Tailscale serves as it was."""
+    try:
+        command = [cli, "serve", "--bg", "--https=443", "--set-path=/", f"http://127.0.0.1:{port}"]
+        return subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def unserve(cli: str) -> bool:
@@ -197,6 +248,104 @@ def unserve(cli: str) -> bool:
         return subprocess.run([cli, "serve", "--https=443", "off"], capture_output=True, timeout=30).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+# ---------------------------------------------------------------- the address follows the page
+# The page may run on any port: 8501 under the LaunchAgent, the first free one from 8501 under the
+# Desktop app, whichever Flightdeck picks under Flightdeck. So each running page checks, as its
+# first visitor arrives and every minute after, where the address forwards, and takes it over
+# when nothing is there. It never takes it from a program that answers, so of two pages running
+# at once the one the address has keeps it, and when that one stops, the other takes it within a
+# minute. Tailscale always forwards straight to the page's own port, never through a proxy in
+# front of it, which might not pass on Tailscale-User-Login, which the guard reads.
+
+def dead_port(config: dict, host: str, port: int) -> int | None:
+    """The port the address forwards to, when the page on `port` should take it over: nothing
+    listens there. None to leave the address be: it forwards to this page already, to a program
+    that answers (another copy of the page, or anything else), or to no port on this Mac, or
+    Funnel is on."""
+    if funnel_on(config, host):
+        return None
+    current = forwarded_port(config, host)
+    if current is None or current == port or listening(current):
+        return None
+    return current
+
+
+def follow(port: int) -> str | None:
+    """One check by the page running on `port`: with phone access set up on this Mac, when its
+    address forwards to a port nothing listens on, point it at this page. Says what it did, or
+    None when it left the address be. A server has no phone.json and no host: its Tailscale
+    sidecar serves its own config (docker-compose.yml)."""
+    host = (read_access() or {}).get("host")
+    cli = find_tailscale() if host else None
+    config = serve_config(cli) if cli else None
+    old = dead_port(config, host, port) if config is not None else None
+    if old is None:
+        return None
+    if not point(cli, port):
+        return (f"The phone's address forwards to port {old}, where nothing answers, and Tailscale "
+                f"wouldn't move it to this page's port, {port}.")
+    return f"The phone's address forwarded to port {old}, where nothing answers: now to this page's, {port}."
+
+
+def keep_following(port: int, every: float = FOLLOW_EVERY) -> bool:
+    """Run follow now and every `every` seconds after, in a thread of the page's own that ends with
+    it, saying in the page's log what it changed. One per page: Streamlit may load this module
+    afresh, so a second call finds the first thread by its name. Returns whether it started one."""
+    name = f"phone-address-{port}"
+    if any(thread.name == name for thread in threading.enumerate()):
+        return False
+
+    def watch() -> None:
+        last = None
+        while True:
+            try:
+                said = follow(port)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                said = f"Checking the phone's address failed: {error}"
+            if said and said != last:  # once, not every minute
+                say(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} {said}")
+            last = said
+            time.sleep(every)
+
+    threading.Thread(target=watch, name=name, daemon=True).start()
+    return True
+
+
+# Before it had an address of its own, the job search tool answered on this Mac's, and a phone that
+# opened it there kept its service worker, which answers / and the icons from that tool's saved
+# copy, so the phone shows neither this page nor its icons. A browser checks a worker's script,
+# /sw.js, for a new version as it opens a page the worker answers: this one takes the old one's
+# place, deletes that copy, removes itself, and reloads the page, which then comes from the Mac.
+# Personal Finance registers no worker of its own, so a phone that never had one never runs it.
+SERVICE_WORKER = """\
+// Personal Finance has no service worker. This one replaces the job search tool's, which a phone
+// kept from when that tool answered on this address: it deletes that tool's saved copy, removes
+// itself, and reloads the page, which then comes from the Mac (phone.py).
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => event.waitUntil((async () => {
+  for (const name of await caches.keys()) {
+    if (name.startsWith("bs-job-search-")) await caches.delete(name);
+  }
+  await self.registration.unregister();
+  for (const client of await self.clients.matchAll({ type: "window" })) client.navigate(client.url);
+})()));
+"""
+
+
+def install_service_worker(static: Path | None = None) -> bool:
+    """Write SERVICE_WORKER as sw.js in Streamlit's own static folder (or `static`), which Streamlit
+    serves at /sw.js, unless it's there already. Returns whether it wrote it. A Streamlit that
+    can't be written to (a container's) raises OSError; no phone there ever had the old worker."""
+    static = static or icon.streamlit_static()
+    if static is None or not static.is_dir():
+        return False
+    file = static / "sw.js"
+    if file.exists() and file.read_text(encoding="utf-8") == SERVICE_WORKER:
+        return False
+    file.write_text(SERVICE_WORKER, encoding="utf-8")
+    return True
 
 
 # ---------------------------------------------------------------- what's wrong
@@ -210,8 +359,10 @@ def protected_folder(root: Path = ROOT, home: Path | None = None) -> str | None:
     return None
 
 
-def diagnose(ts: dict, access: dict | None, loaded: bool, answers: bool, forwarded: bool | None) -> str | None:
-    """Why phone access doesn't work, in a sentence with what to do, or None when it does."""
+def diagnose(ts: dict, access: dict | None, loaded: bool, forwarded: int | bool | None, answers: bool) -> str | None:
+    """Why phone access doesn't work, in a sentence with what to do, or None when it does.
+    `forwarded` is the port Tailscale forwards the address to (False: none on this Mac; None: it
+    can't say), and `answers` whether the page answers there (on PORT when it can't say)."""
     fix = "Set it up again with: sh install.sh --phone"
     if not access:
         return "Phone access isn't set up. To set it up: sh install.sh --phone"
@@ -221,13 +372,16 @@ def diagnose(ts: dict, access: dict | None, loaded: bool, answers: bool, forward
         return "Tailscale is off on this Mac. Turn it on from its menu-bar icon."
     if ts["host"] != access.get("host"):
         return f"This Mac's tailnet name changed (it was {access.get('host')}). {fix}"
-    if not loaded:
-        return f"The page's LaunchAgent isn't loaded, so nothing keeps the page running. {fix}"
-    if not answers:
-        return f"The page isn't answering on port {PORT}. What it printed is in {LOG}."
     if forwarded is False:
         return f"Tailscale isn't forwarding this Mac's address to the page. {fix}"
-    return None
+    port = PORT if forwarded is None else forwarded
+    if answers:
+        return None  # whatever keeps it running: the LaunchAgent, Flightdeck, or an open Desktop app
+    if loaded and port == PORT:
+        return f"The page isn't answering on port {PORT}. What it printed is in {LOG}."
+    return (f"Tailscale forwards this Mac's address to port {port}, where the page isn't answering. Open "
+            f"Personal Finance on this Mac: a running page takes the address over within a minute when "
+            f"nothing answers there. Or, to have launchd keep a page running for it: sh install.sh --phone")
 
 
 # ---------------------------------------------------------------- commands
@@ -283,7 +437,9 @@ def status() -> int:
     cli = find_tailscale()
     ts = tailscale_status(cli)
     access = read_access()
-    why = diagnose(ts, access, agent_loaded(), page_answers(), served(cli) if cli else None)
+    config = serve_config(cli) if cli else None
+    forwarded = None if config is None or not access else (forwarded_port(config, access.get("host", "")) or False)
+    why = diagnose(ts, access, agent_loaded(), forwarded, page_answers(forwarded or PORT))
     if why:
         say(why)
         return 1

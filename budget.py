@@ -4,6 +4,9 @@ does. See docs/spec.md, Budget.
     uv run budget.py              # check budget.toml and print the summary by class
     uv run budget.py --interview  # answer questions in the terminal; writes budget.toml
 
+The page edits the same file (the Edit switches on the Budget and Assumptions & taxes tabs), through
+with_inputs and with_lines, which keep its comments and layout.
+
 Every dollar of gross pay is assigned to a line. Most lines are typed amounts; taxes, payroll
 savings, the HDHP premium and the commuter benefit are calculated from the inputs, and the surplus
 line takes whatever is left, which goes to the taxable brokerage. Amounts are positive costs,
@@ -23,6 +26,7 @@ import tomllib
 from pathlib import Path
 
 import pandas as pd
+import tomlkit
 
 import config
 
@@ -88,9 +92,22 @@ def load(path: Path) -> dict:
         for key in keys:
             if key not in budget.get(section, {}):
                 raise BudgetError(f"{path.name}: [{section}] needs {key}")
+    for section, key, *_ in QUESTIONS:
+        value = budget[section][key]
+        if not is_number(value) or value < 0:
+            raise BudgetError(f"{path.name}: [{section}] {key} must be a number, zero or more")
+        if (section, key) in FRACTIONS and value > 1:
+            raise BudgetError(f"{path.name}: [{section}] {key} is a fraction, like 0.062 for 6.2%")
+    if budget["hsa"]["employer"] > budget["hsa"]["limit"]:
+        raise BudgetError(f"{path.name}: [hsa] employer can't be more than the limit, which covers both")
     brackets = budget["tax"]["federal_brackets"]
-    if not brackets or any(len(bracket) != 2 for bracket in brackets) or brackets[0][0] != 0:
+    if (not brackets or any(not isinstance(bracket, list) or len(bracket) != 2 or not all(map(is_number, bracket))
+                            for bracket in brackets) or brackets[0][0] != 0):
         raise BudgetError(f"{path.name}: federal_brackets is a list of [over, rate] pairs starting at [0, rate]")
+    if any(later[0] <= earlier[0] for earlier, later in zip(brackets, brackets[1:])):
+        raise BudgetError(f"{path.name}: federal_brackets go from the lowest up, each over a larger amount than the last")
+    if any(not 0 <= rate <= 1 for _, rate in brackets):
+        raise BudgetError(f"{path.name}: each federal bracket's rate is a fraction, like 0.22 for 22%")
     lines = budget.get("line", [])
     items = [line.get("item", "") for line in lines]
     for number, line in enumerate(lines, start=1):
@@ -101,6 +118,8 @@ def load(path: Path) -> dict:
             raise BudgetError(f"{where}: class must be one of {', '.join(CLASSES)}")
         if ("monthly" in line) == ("from" in line):
             raise BudgetError(f"{where}: give either monthly (a typed amount) or from (a calculated one), not both")
+        if "monthly" in line and not is_number(line["monthly"]):
+            raise BudgetError(f"{where}: monthly must be a number")
         if "from" in line and line["from"] not in CALCULATED:
             raise BudgetError(f"{where}: from must be one of {', '.join(CALCULATED)}")
         if line.get("from") == "commuter_benefit" and line.get("covers") not in items:
@@ -110,6 +129,11 @@ def load(path: Path) -> dict:
     if [line.get("from") for line in lines].count("surplus") != 1:
         raise BudgetError(f"{path.name}: exactly one line must take the surplus (from = \"surplus\")")
     return budget
+
+
+def is_number(value) -> bool:
+    """Whether a value read from TOML is a number (TOML's true and false aren't)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def line_category(line: dict) -> str | None:
@@ -287,6 +311,10 @@ QUESTIONS = [
     ("tax", "illinois_rate", "Illinois income tax rate", "percent"),
     ("tax", "illinois_exemption", "Illinois personal exemption", "dollars"),
 ]
+# The inputs that can't be more than the whole: a tax rate, or a share of salary. (The match rate
+# can: some employers add more than a dollar for each dollar.)
+FRACTIONS = {("employer_match", "cap_share_of_salary"), ("tax", "social_security_rate"), ("tax", "medicare_rate"),
+             ("tax", "illinois_rate")}
 LINE_KEYS = ["group", "item", "class", "monthly", "from", "covers", "category", "note"]
 
 
@@ -441,6 +469,196 @@ def save(plan: dict, path: Path) -> None:
     trial.replace(path)
 
 
+# ---------------------------------------------------------------- editing on the page
+
+def missing(value) -> bool:
+    """Whether a cell of the page's editors was left empty."""
+    return value is None or bool(pd.isna(value))
+
+
+def cell_text(value) -> str:
+    """A text cell from the page's editors, trimmed; an empty one is ""."""
+    return "" if missing(value) else str(value).strip()
+
+
+def from_percent(value: float) -> float:
+    """A percent as the page takes it (6.2) as the fraction the file keeps (0.062), without the
+    float noise that dividing leaves (0.062000000000000006)."""
+    return round(value / 100, 10)
+
+
+def plain_number(value: float) -> int | float:
+    """A whole amount as an int, so the file says 1_800 rather than 1800.0."""
+    return int(value) if float(value).is_integer() else float(value)
+
+
+def typed_inputs(answers: dict[tuple[str, str], float], brackets: list[tuple]) -> dict[str, dict]:
+    """The Assumptions editor's answers, in its units (dollars, and percents typed as percents), as
+    the inputs the file keeps: each section's values, and the brackets as [over, rate] pairs from the
+    lowest up. Bracket rows left empty are dropped; one with a single number raises BudgetError."""
+    kinds = {(section, key): kind for section, key, _, kind in QUESTIONS}
+    inputs: dict[str, dict] = {section: {} for section in INPUTS}
+    for (section, key), value in answers.items():
+        inputs[section][key] = from_percent(value) if kinds[section, key] == "percent" else plain_number(value)
+    rows = [(over, rate) for over, rate in brackets if not (missing(over) and missing(rate))]
+    if any(missing(over) or missing(rate) for over, rate in rows):
+        raise BudgetError("Each federal bracket needs both numbers: the taxable income it starts over, and its rate")
+    inputs["tax"]["federal_brackets"] = sorted([plain_number(over), from_percent(rate)] for over, rate in rows)
+    return inputs
+
+
+def changed_inputs(plan: dict, inputs: dict[str, dict]) -> dict[str, dict]:
+    """The inputs whose values differ from the plan's, by section, leaving out sections with none."""
+    return {section: changed for section, values in inputs.items()
+            if (changed := {key: value for key, value in values.items() if plan[section].get(key) != value})}
+
+
+def line_rows(budget: dict) -> list[dict]:
+    """Every line as the page's line editor shows it: group, item and class; the monthly amount of a
+    typed line, None for a calculated one, which says so; the category it's compared with; its note."""
+    return [{"group": line["group"], "item": line["item"], "class": line["class"], "monthly": line.get("monthly"),
+             "calculated": "calculated" if "from" in line else "", "category": line_category(line),
+             "note": line.get("note", "")} for line in budget["line"]]
+
+
+def edited_lines(lines: list[dict], rows: list[dict]) -> list[tuple[int | None, dict]]:
+    """The line editor's rows as lines for with_lines, each with the position it was edited from.
+    A row's `at` is the position of the line it shows; a row without one is new and goes just
+    before the surplus line, as the interview puts new lines, unless it was left blank. A category
+    is written only when it isn't the item's default or the line already had one, and a renamed
+    line stays covered by the commuter benefit that covered it. Raises BudgetError naming the first
+    row that can't be used."""
+    kept: list[tuple[int, dict]] = []
+    new: list[tuple[None, dict]] = []
+    for number, row in enumerate(rows, start=1):
+        at = row.get("at")
+        original = lines[at] if at is not None else {}
+        group, item = cell_text(row.get("group")), cell_text(row.get("item"))
+        if at is None and not any([group, item, cell_text(row.get("note")), cell_text(row.get("category")),
+                                   not missing(row.get("monthly"))]):
+            continue  # a row added and left blank
+        if not group or not item:
+            raise BudgetError(f"{item or f'Row {number}'}: each line needs a group and a line item")
+        if row.get("class") not in CLASSES:
+            raise BudgetError(f"{item}: class must be one of {', '.join(CLASSES)}")
+        line = {**original, "group": group, "item": item, "class": row["class"]}
+        monthly = row.get("monthly")
+        if "from" in original:
+            if not missing(monthly):
+                raise BudgetError(f"{item} is calculated, so it takes no monthly amount: its inputs are on Assumptions & taxes")
+        elif missing(monthly):
+            raise BudgetError(f"{item}: type its monthly amount")
+        elif monthly < 0:
+            raise BudgetError(f"{item}: the monthly amount is zero or more")
+        else:
+            line["monthly"] = plain_number(monthly)
+        note = cell_text(row.get("note"))
+        if note:
+            line["note"] = note
+        else:
+            line.pop("note", None)
+        category = cell_text(row.get("category")) or None
+        if "category" in original or category != DEFAULT_CATEGORIES.get(item):
+            line["category"] = category or ""
+        if at is None:
+            new.append((None, line))
+        else:
+            kept.append((at, line))
+    renamed = {lines[at]["item"]: line["item"] for at, line in kept if lines[at]["item"] != line["item"]}
+    for _, line in kept:
+        if line.get("covers") in renamed:
+            line["covers"] = renamed[line["covers"]]
+    surplus_at = next(index for index, line in enumerate(lines) if line.get("from") == "surplus")
+    if surplus_at not in [at for at, _ in kept]:
+        raise BudgetError("The surplus line can't be removed: it takes whatever gross pay the other lines leave")
+    edited: list[tuple[int | None, dict]] = []
+    for at, line in kept:
+        if at == surplus_at:
+            edited += new
+        edited.append((at, line))
+    return edited
+
+
+def set_toml_value(table, key: str, value) -> None:
+    """Set key in a tomlkit table to value, written as toml_value writes it, unless it already holds
+    that value, so what didn't change stays exactly as it was written. A comment after the old
+    value stays after the new one, at the same column."""
+    old = table.get(key)
+    if old is not None and old == value:
+        return
+    new = tomlkit.value(toml_value(value))
+    if isinstance(old, tomlkit.items.Item) and old.trivia.comment:
+        new.trivia.comment = old.trivia.comment
+        width = len(old.as_string()) + len(old.trivia.comment_ws) - len(new.as_string())
+        new.trivia.comment_ws = " " * max(1, width)
+    table[key] = new
+
+
+def set_brackets(table, brackets: list[list[float]]) -> None:
+    """The federal brackets, changed pair by pair in the list already there, so it keeps its layout
+    and comments, one pair to a line."""
+    old = table.get("federal_brackets")
+    if old == brackets:
+        return
+    if not isinstance(old, tomlkit.items.Array):
+        old = tomlkit.array()
+        old.multiline(True)
+        table["federal_brackets"] = old
+        old = table["federal_brackets"]
+    for index, bracket in enumerate(brackets):
+        if index >= len(old):
+            old.append(tomlkit.value(toml_value(bracket)))
+        elif old[index] != bracket:
+            old[index] = tomlkit.value(toml_value(bracket))
+    while len(old) > len(brackets):
+        del old[len(brackets)]
+
+
+def with_inputs(text: str, inputs: dict[str, dict]) -> str:
+    """budget.toml's text with new values for some of its inputs ({section: {key: value}}), keeping
+    its comments, its order and the way it writes everything else."""
+    document = tomlkit.parse(text)
+    for section, values in inputs.items():
+        if section not in document:
+            document[section] = tomlkit.table()
+        for key, value in values.items():
+            if key == "federal_brackets":
+                set_brackets(document[section], value)
+            else:
+                set_toml_value(document[section], key, value)
+    return tomlkit.dumps(document)
+
+
+def with_lines(text: str, lines: list[tuple[int | None, dict]]) -> str:
+    """budget.toml's text with these lines in place of its [[line]] tables. Each line comes with the
+    position of the table it was edited from, or None when it's new; positions only go up, since
+    the editor can't reorder lines. A table keeps its comments, keys this code doesn't know, and
+    whatever didn't change; a table no line came from is removed."""
+    document = tomlkit.parse(text)
+    tables = document["line"]
+    origins = [origin for origin, _ in lines if origin is not None]
+    if origins != sorted(set(origins)) or any(origin >= len(tables) for origin in origins):
+        raise ValueError("lines keep their order, and each comes from a table in the file")
+    for index in reversed(range(len(tables))):
+        if index not in origins:
+            del tables[index]
+    for position, (origin, line) in enumerate(lines):
+        table = tomlkit.table() if origin is None else tables[position]
+        for key in LINE_KEYS:
+            if key in line:
+                set_toml_value(table, key, line[key])
+            elif key in table:
+                del table[key]
+        if origin is None and position < len(tables):
+            table.add(tomlkit.nl())  # the blank line before the next [[line]]
+            tables.insert(position, table)
+        elif origin is None:
+            if len(tables):
+                tables[-1].add(tomlkit.nl())
+            tables.append(table)
+    return tomlkit.dumps(document).rstrip("\n") + "\n"
+
+
 def print_summary(plan: dict) -> None:
     """The summary by class, as the top of the spreadsheet's Budget tab shows it."""
     split, _ = summary_by_class(plan, line_items(plan))
@@ -465,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("Not saved.")
                 return 1
             save(plan, path)
-            print(f"Saved {path}. Restart the page to see it on the Budget tab.")
+            print(f"Saved {path}. A page already open shows it on its next click or refresh.")
             return 0
         if not path.exists():
             print(f"No budget yet: run `uv run budget.py --interview`, or copy budget.example.toml to {path}.",

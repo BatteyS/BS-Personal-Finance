@@ -58,7 +58,11 @@ AGENT = "io.github.batteys.bs-personal-finance.page"  # phone access's LaunchAge
 OWN_MODULES = {"actions", "budget", "categorize", "config", "db", "formats", "icon", "load", "ofx", "phone",
                "queries", "statements", "updates"}
 MODES = ["Personal", "Finance"]
-RULE_CATEGORIES = [name for name in config.SPENDING_CATEGORIES if name != "uncategorized"] + config.OTHER_CATEGORIES
+# The Assumptions editor's headings, one per section of budget.toml's inputs, and the inputs that
+# max an IRS cap, whose help names that year's limit.
+INPUT_HEADINGS = {"income": "Income and savings", "hsa": "HSA", "employer_match": "Employer 401(k) match",
+                  "tax": "Tax parameters"}
+CAP_INPUTS = {("income", "retirement_401k"): "401k", ("income", "roth_ira"): "roth", ("hsa", "limit"): "hsa"}
 
 
 def theme_colors(option: str) -> tuple[str, str]:
@@ -98,6 +102,18 @@ def tab_icon() -> bytes:
 
 
 @st.cache_resource(show_spinner=False)
+def phone_address() -> None:
+    """Once while the page runs, as its first visitor arrives: keep the phone's address on this
+    page's own port, however it was started (phone.keep_following), and serve the worker that takes
+    the job search tool's old one off a phone (phone.install_service_worker)."""
+    try:
+        phone.install_service_worker()
+    except OSError:  # a Streamlit that can't be written to: a container's, which no phone had it from
+        pass
+    phone.keep_following(st.get_option("server.port"))
+
+
+@st.cache_resource(show_spinner=False)
 def icon_version() -> str:
     """The icon's hash (icon.version), for the home-screen icon's address below."""
     return icon.version()
@@ -112,7 +128,9 @@ if reason:
     st.stop()
 st.logo(LOGO, size="large", link=SITE)  # the top-left corner, where the site's header has it
 # The home-screen icon and full-screen mode, for "Add to Home Screen" on a phone. Streamlit owns
-# the page's <head>, so a zero-height component adds the tags to it. The icon's address carries its
+# the page's <head>, so a zero-height component adds the tags to it. Streamlit's own page names the
+# icon already where icon.install_favicon could write to it (Safari's Favorites find it only there),
+# and then the script leaves that link be. The icon's address carries its
 # hash, as the tab's does: Safari can show this icon in a tab, and keeps each address's picture for
 # good, so an unversioned one kept the tab on the old green ring. It also makes the monogram
 # open the site in this tab, in place of the page: Streamlit's logo link opens a new one. The link
@@ -185,6 +203,10 @@ def import_panel() -> None:
                 if result.get("skipped"):
                     st.warning(f"{result['file']}: not one of your accounts, so skipped: {', '.join(result['skipped'])}. "
                                "To count one, add it to accounts.toml with its fidelity_label.")
+            elif result.get("institution") == "ofx" and result.get("accounts"):
+                day = date.fromisoformat(result["as_of"])
+                count = result["accounts"]
+                st.caption(f"{result['file']}: holdings for {count} account{'s' * (count != 1)} as of {day:%b} {day.day}.")
         last = queries.last_import()
         if not last.empty:
             st.caption(f"Last import: {queries.import_summary(last)}")
@@ -193,9 +215,71 @@ def import_panel() -> None:
                 counts = actions.rerun_rules()
                 st.session_state.pop("import_results", None)  # the rules work now: old errors are stale
                 st.toast(f"Recategorized {sum(counts.values())} rows")
-            except categorize.RulesError as error:
+            except (categorize.RulesError, config.CategoriesError) as error:
                 st.error(str(error))
+        categories_panel()
         update_panel()
+
+
+def keep_choice(key: str, options: list[str]) -> None:
+    """Forget a picker's choice that is no longer among its options, before the picker is drawn, so
+    a category renamed or removed never lingers in it."""
+    if key in st.session_state and st.session_state[key] not in options:
+        del st.session_state[key]
+
+
+def rule_categories() -> list[str]:
+    """What a rule can sort rows into: every category but uncategorized, your own included."""
+    return [name for name in config.all_categories() if name != "uncategorized"]
+
+
+def categories_panel() -> None:
+    """Sidebar: add a spending or income category of your own, which every picker on the page offers
+    at once (the sidebar is drawn before the tabs), and rename or remove one of yours that nothing
+    uses yet."""
+    with st.expander("Categories"):
+        done = st.session_state.pop("category_done", None)
+        if done:
+            st.success(done)
+        built_in = [name for name in config.BUILT_IN_SPENDING if name != "uncategorized"]
+        st.caption(f"Built in: {', '.join(built_in)} (spending) and income.")
+        with st.form("add_category", clear_on_submit=True, border=False):
+            name = st.text_input("New category", placeholder="pets")
+            kind = st.radio("Counts as", config.CATEGORY_KINDS, horizontal=True, format_func=str.capitalize,
+                            help="Spending shows in the ring, Budget vs actual and the month's spending against "
+                                 "income; income counts toward the month's income.")
+            if st.form_submit_button("Add category"):
+                try:
+                    added = actions.add_category(name, kind)
+                    st.session_state["rule_category"] = added  # the add-rule form, drawn below, starts on it
+                    st.success(f"Added {added}. Rules can use it now, and so can a budget line's category."
+                               if kind == "spending" else f"Added {added}. Rules can use it now; it counts as income.")
+                except config.CategoriesError as error:
+                    st.error(str(error))
+        kinds = {name: kind for kind in config.CATEGORY_KINDS for name in config.YOUR_CATEGORIES[kind]}
+        if not kinds:
+            return
+        keep_choice("category_pick", list(kinds))
+        pick = st.selectbox("Yours", list(kinds), key="category_pick", format_func=lambda name: f"{name} ({kinds[name]})")
+        uses = actions.category_uses(pick)
+        if uses:
+            st.caption(f"Used by {uses}, so it stays as it is. To rename or remove it, move those to another "
+                       "category first.")
+            return
+        with st.form("change_category", clear_on_submit=True, border=False):
+            new_name = st.text_input("Rename to", placeholder=pick)
+            rename, remove = st.columns(2)
+            renamed, removed = rename.form_submit_button("Rename"), remove.form_submit_button("Remove")
+        if renamed or removed:
+            try:
+                if renamed:
+                    st.session_state["category_done"] = f"Renamed {pick} to {actions.rename_category(pick, new_name)}."
+                else:
+                    actions.remove_category(pick)
+                    st.session_state["category_done"] = f"Removed {pick}."
+                st.rerun()  # the picker above was drawn with the old names
+            except config.CategoriesError as error:
+                st.error(str(error))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -498,7 +582,10 @@ def add_rule_form(loose) -> None:
     with st.form("add_rule"):
         pattern = st.text_input("Pattern", value=group["pattern"], key=f"pattern_{merchant}",
                                 help="Matched against the uppercased description. The suggestion is the part every row shares.")
-        category = st.selectbox("Category", RULE_CATEGORIES)
+        options = rule_categories()
+        keep_choice("rule_category", options)
+        category = st.selectbox("Category", options, key="rule_category",
+                                help="Missing one? Add it under Categories in the sidebar.")
         match = st.radio("Match", ["contains", "regex"], horizontal=True)
         if st.form_submit_button("Save rule and re-run"):
             try:
@@ -506,7 +593,7 @@ def add_rule_form(loose) -> None:
                 actions.rerun_rules()
                 st.session_state.pop("import_results", None)
                 st.rerun()
-            except categorize.RulesError as error:
+            except (categorize.RulesError, config.CategoriesError) as error:
                 st.error(str(error))
 
 
@@ -730,9 +817,56 @@ def record_balance_form() -> None:
                "every Fidelity account's with a positions download (Portfolio → Positions → Download).")
 
 
+def shares(quantity: float | None) -> str:
+    """Shares to as many as four decimals, without trailing zeros: "10", "12.345"."""
+    if quantity is None:
+        return ""
+    return f"{quantity:,.4f}".rstrip("0").rstrip(".")
+
+
+def holdings_table(held: pd.DataFrame) -> None:
+    """One account's holdings, largest first, then their total, which is the account's balance.
+    Cost basis and gain total the holdings that have one, as the brokerage's own page does."""
+    known = held["cost_basis"].notna()
+    shown = pd.DataFrame({
+        "symbol": held["symbol"], "description": held["description"], "shares": held["quantity"].map(shares),
+        "price": held["price"].map(lambda price: "" if price is None else f"${price:,.2f}"),
+        "value": held["value"].map(queries.money),
+        "cost_basis": held["cost_basis"].map(lambda basis: "" if basis is None else queries.money(basis)),
+        "gain": [optional_money(gain) if has_basis else "" for gain, has_basis in zip(held["gain"], known)],
+    })
+    shown.loc[len(shown)] = {
+        "symbol": "Total", "description": "", "shares": "", "price": "",
+        "value": queries.money(queries.cents(held["value"].sum())),
+        "cost_basis": queries.money(queries.cents(held.loc[known, "cost_basis"].sum())) if known.any() else "",
+        "gain": optional_money(queries.cents(held.loc[known, "gain"].sum())) if known.any() else "",
+    }
+    static_table(shown, {"symbol": "Symbol", "description": "Description", "shares": "Shares", "price": "Price",
+                         "value": "Value", "cost_basis": "Cost basis", "gain": "Gain"})
+
+
+def holdings_section(accounts: pd.DataFrame, month: str) -> None:
+    """What each investment account held at the month end, one expander per account titled with
+    the balance and as-of label the accounts table shows; its holdings add up to that balance."""
+    held = queries.holdings(accounts)
+    if held.empty:
+        return
+    st.subheader(f"Holdings, end of {queries.month_label(month)}")
+    for row in accounts.to_dict("records"):
+        own = held[held["key"] == row["key"]]
+        if own.empty:
+            continue
+        with st.expander(f"{row['name']} · {queries.money(row['balance'])} · {as_of_label(row, month)}"):
+            holdings_table(own.reset_index(drop=True))
+    st.caption("Each account's holdings come with the reading its balance is (a positions download, or a brokerage's "
+               "OFX file), so they add up to its balance above. Gain is value less cost basis, for the holdings that "
+               "have one; OFX carries no cost basis.")
+
+
 def net_worth_page() -> None:
     """The Net worth tab: the latest month end's net worth and how it changed, the lines over the
-    months with a pill to show or hide each, each account's balance, and the form for typing one."""
+    months with a pill to show or hide each, each account's balance, the form for typing one, and
+    what each investment account held."""
     worth = queries.net_worth()
     if not worth["months"]:
         st.info("No balances yet. Import a Fidelity positions download or a Bank of America export from the "
@@ -770,6 +904,8 @@ def net_worth_page() -> None:
                        "since, as if the market stood still.")
     with form:
         record_balance_form()
+    if worth["months"]:
+        holdings_section(worth["accounts"], worth["latest"])
 
 
 def money_table(frame: pd.DataFrame, label: str) -> None:
@@ -811,8 +947,8 @@ def comparison_page(plan: dict, example: bool) -> None:
     """The Budget vs actual tab: each spending category's monthly budget against what was spent, for
     one month and for the year so far."""
     if example:
-        st.info("Fill in your budget first (`uv run budget.py --interview`); comparing your spending with the "
-                "made-up example would mean nothing.")
+        st.info("Fill in your budget first (Edit on the Budget tab, or `uv run budget.py --interview`); comparing "
+                "your spending with the made-up example would mean nothing.")
         return
     available = queries.months()
     if not available:
@@ -844,17 +980,71 @@ def comparison_page(plan: dict, example: bool) -> None:
     })
     st.caption(f"Year to date is {span} {month[:4]}: it starts in {queries.month_label(first)}, the first month with data this year. Spending "
                "is net, so refunds count against it. Each category's budget is the sum of the budget lines beside "
-               "it; change which line counts where with `category = \"…\"` on the line in budget.toml.")
+               "it; change which line counts where with Edit on the Budget tab (Compared with).")
     left_out = budget.uncompared_lines(plan)
     if left_out:
         st.caption(f"Not compared with any category: {', '.join(left_out)}.")
+
+
+def edit_switch(key: str) -> bool:
+    """A tab's Edit switch. A save turns it off again, before it is drawn, and says what it did."""
+    done = st.session_state.pop(f"{key}_done", None)
+    if done:
+        st.session_state[key] = False
+        st.toast(done)
+    return st.toggle("Edit", key=key)
+
+
+def finish_edit(key: str, done: str) -> None:
+    """Close an editor after Save: rerun with its switch off, so every tab reads the saved file."""
+    st.session_state[f"{key}_done"] = done
+    st.rerun()
+
+
+def lines_editor(plan: dict) -> None:
+    """The Budget tab's lines in an editable table: a typed line's amount, any line's name, class,
+    category or note; a new line, which goes before the surplus; a line removed. Calculated lines
+    take their amounts from the Assumptions & taxes tab."""
+    st.caption("A new line goes just before the surplus. Calculated lines have no amount to type here: theirs "
+               "come from Assumptions & taxes.")
+    shown = pd.DataFrame(budget.line_rows(plan))
+    with st.form("lines_form", border=False):
+        # Every line in view, and room for a few new ones, so the table never scrolls under a click.
+        # No column is marked required: Streamlit would quietly drop a new row missing one, where
+        # budget.edited_lines names it.
+        edited = st.data_editor(
+            shown, key="edit_lines_table", num_rows="dynamic", hide_index=True, width="stretch",
+            height=35 * (len(shown) + 4) + 3, placeholder="", disabled=["calculated"], column_config={
+                "group": st.column_config.TextColumn("Group"),
+                "item": st.column_config.TextColumn("Line item"),
+                "class": st.column_config.SelectboxColumn("Class", options=budget.CLASSES, default="Discretionary"),
+                "monthly": st.column_config.NumberColumn("Monthly", min_value=0, format="dollar"),
+                "calculated": st.column_config.TextColumn("Source"),
+                "category": st.column_config.SelectboxColumn("Compared with", options=config.SPENDING_CATEGORIES),
+                "note": st.column_config.TextColumn("Notes"),
+            })
+        saved = st.form_submit_button("Save", type="primary", key="save_lines")
+    if not saved:
+        return
+    count = len(plan["line"])
+    # The table's index is each line's position in the file; Streamlit numbers added rows after them.
+    rows = [{**row, "at": int(at) if at < count else None} for at, row in zip(edited.index, edited.to_dict("records"))]
+    try:
+        written = actions.save_budget_lines(budget.edited_lines(plan["line"], rows), plan["line"])
+    except budget.BudgetError as error:
+        st.error(str(error))
+        return
+    finish_edit("edit_lines", "Saved to budget.toml." if written else "Nothing changed.")
 
 
 def budget_page(plan: dict, example: bool) -> None:
     """The Budget tab: the spreadsheet's summary by class, summary by group and every line."""
     if example:
         st.warning(f"Showing the made-up example. Copy budget.example.toml to {budget.budget_path()} "
-                   "and fill in your amounts to see your own budget.")
+                   "and fill in your amounts to see your own budget, or Edit it here: saving starts yours.")
+    if edit_switch("edit_lines"):
+        lines_editor(plan)
+        return
     lines = budget.line_items(plan)
     gross = plan["income"]["salary"] / 12
     split, pay = budget.summary_by_class(plan, lines)
@@ -881,11 +1071,70 @@ def budget_page(plan: dict, example: bool) -> None:
                          "annual": "Annual", "share": "% gross", "calculated": "Source", "note": "Notes"})
 
 
+def assumptions_editor(plan: dict) -> None:
+    """The Assumptions & taxes tab's inputs, brackets and pay schedule as a form. Save writes what
+    changed into budget.toml and accounts.toml, and every tab reads them on the rerun."""
+    year = date.today().year
+    caps = config.CAPS.get(year, {})
+    yours = bool(actions.your_accounts())
+    answers: dict[tuple[str, str], float] = {}
+    with st.form("assumptions_form", border=False):
+        inputs, parameters = st.columns(2, gap="large")
+        heading = None
+        for section, key, question, kind in budget.QUESTIONS:
+            column = parameters if section == "tax" else inputs
+            if section != heading:
+                column.subheader(INPUT_HEADINGS[section])
+                heading = section
+            percent = kind == "percent"
+            cap = caps.get(CAP_INPUTS.get((section, key), ""))
+            answers[section, key] = column.number_input(
+                f"{question} ({'%' if percent else '$'})", min_value=0.0, format="%.2f",
+                max_value=100.0 if (section, key) in budget.FRACTIONS else None,
+                value=float(plan[section][key]) * (100 if percent else 1),
+                step=0.01 if percent else 1.0 if key.endswith("monthly") else 100.0,
+                help=f"The IRS limit for {year} is {queries.money(cap)}." if cap else None, key=f"edit_{section}_{key}")
+        parameters.subheader("Federal brackets (single)")
+        brackets = parameters.data_editor(
+            pd.DataFrame([{"over": float(over), "rate": rate * 100} for over, rate in plan["tax"]["federal_brackets"]]),
+            key="edit_brackets", num_rows="dynamic", hide_index=True, width="stretch", column_config={
+                "over": st.column_config.NumberColumn("Taxable income over", min_value=0, format="dollar", width="medium"),
+                "rate": st.column_config.NumberColumn("Rate (%)", min_value=0, max_value=100, format="%.2f", width="small"),
+            })
+        inputs.subheader("Pay schedule")
+        per_year = {cap: int(inputs.number_input(
+            f"{label} contributions a year", min_value=1, max_value=52, value=int(config.CONTRIBUTIONS_PER_YEAR[cap]),
+            disabled=not yours, help="26 if you're paid every two weeks, 24 twice a month, 12 monthly.",
+            key=f"edit_per_year_{cap}")) for cap, label in queries.CAP_LABELS.items()}
+        planned = inputs.multiselect(
+            "Assumed maxed, with no export to measure yet", list(queries.CAP_LABELS), default=sorted(config.PLANNED_CAPS),
+            format_func=queries.CAP_LABELS.get, disabled=not yours, key="edit_planned")
+        if not yours:
+            inputs.caption("The pay schedule is kept with your accounts, which start when the page learns your first file.")
+        saved = st.form_submit_button("Save", type="primary", key="save_assumptions")
+    if not saved:
+        return
+    written = []
+    try:
+        changes = budget.changed_inputs(plan, budget.typed_inputs(answers, list(zip(brackets["over"], brackets["rate"]))))
+        if actions.save_budget_inputs(changes):
+            written.append("budget.toml")
+        if yours and actions.save_pay_schedule(per_year, planned):
+            written.append("accounts.toml")
+    except (budget.BudgetError, config.AccountsError) as error:
+        st.error(f"{error}" + (f" ({' and '.join(written)} saved.)" if written else ""))
+        return
+    finish_edit("edit_assumptions", f"Saved to {' and '.join(written)}." if written else "Nothing changed.")
+
+
 def assumptions_page(plan: dict, example: bool) -> None:
-    """The Assumptions & taxes tab: the inputs, the tax parameters and brackets, and the annual
-    tax calculation that feeds the Budget tab."""
+    """The Assumptions & taxes tab: the inputs, the tax parameters and brackets, the pay schedule,
+    and the annual tax calculation that feeds the Budget tab. Edit turns the first four into a form."""
     if example:
-        st.warning("Showing the made-up example's assumptions.")
+        st.warning("Showing the made-up example's assumptions. Saving an edit starts your own budget.toml from them.")
+    if edit_switch("edit_assumptions"):
+        assumptions_editor(plan)
+        return
     calc = budget.tax_calculation(plan)
     income, hsa, tax, match = plan["income"], plan["hsa"], plan["tax"], plan["employer_match"]
     value = {"label": "Input", "value": "Value"}
@@ -909,6 +1158,11 @@ def assumptions_page(plan: dict, example: bool) -> None:
             ("HSA annual limit (self-only)", dollars(hsa["limit"])),
             ("Employer HSA contribution, annual", dollars(hsa["employer"])),
         ]), value)
+        st.subheader("Pay schedule")
+        planned = [label for cap, label in queries.CAP_LABELS.items() if cap in config.PLANNED_CAPS]
+        static_table(rows([(f"{label} contributions a year", str(config.CONTRIBUTIONS_PER_YEAR[cap]))
+                           for cap, label in queries.CAP_LABELS.items()]
+                          + [("Assumed maxed, with no export to measure yet", ", ".join(planned) or "None")]), value)
     with parameters:
         st.subheader("Tax parameters")
         static_table(rows([
@@ -1074,6 +1328,7 @@ def page() -> None:
 
 
 try:
+    phone_address()  # inside the try, so a phone.py from before an update gets the Restart button
     page()
 except (AttributeError, ImportError) as error:
     if not stale_code(error):

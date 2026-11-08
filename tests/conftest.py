@@ -1,4 +1,5 @@
-"""Every test runs against the made-up accounts in tests/accounts.toml, never the data folder's.
+"""Every test runs against the made-up accounts in tests/accounts.toml, never the data folder's,
+and with only the built-in categories, never the data folder's categories.toml.
 
 Tests that load the scrubbed samples (tests/test_samples.py, which stays private) ask for
 `sample_accounts` instead: the samples carry their owner's account names, which
@@ -29,6 +30,14 @@ def use_accounts(monkeypatch, path: Path) -> None:
 def test_accounts(monkeypatch, tmp_path):
     use_accounts(monkeypatch, HERE / "accounts.toml")
     monkeypatch.setattr(config, "FORMATS_PATH", tmp_path / "formats.toml")  # no taught layouts unless a test writes some
+    # Only the built-in categories unless a test adds some. Fresh lists, since adding one updates
+    # them in place.
+    monkeypatch.setattr(config, "CATEGORIES_PATH", tmp_path / "categories.toml")
+    yours = {kind: [] for kind in config.CATEGORY_KINDS}
+    spending, income = config.with_yours(yours)
+    monkeypatch.setattr(config, "YOUR_CATEGORIES", yours)
+    monkeypatch.setattr(config, "SPENDING_CATEGORIES", spending)
+    monkeypatch.setattr(config, "INCOME_CATEGORIES", income)
 
 
 @pytest.fixture

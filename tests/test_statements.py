@@ -259,6 +259,24 @@ def test_salary_and_expenses_equal_this_months_income_and_spending(tmp_path):
     assert {name: found[statements.category_label(name)] for name in by_category.index} == by_category.to_dict()
 
 
+def test_categories_of_your_own_get_their_own_lines_and_the_cash_flow_still_reconciles(tmp_path):
+    (tmp_path / "categories.toml").write_text('spending = ["pets"]\nincome = ["freelance"]\n')
+    config.reload_categories()  # conftest points it at this test's folder
+    rows = OCTOBER_ROWS + SEPTEMBER_ROWS + [("gig", "bofa_checking", "2026-10-18", 400.0, "UPWORK ESCROW", "freelance", None),
+                                            ("vet", "amex", "2026-10-09", -100.0, "PAWS VET", "pets", None)]
+    later = {("bofa_checking", "2026-10-31"): 2100.0, ("amex", "2026-10-31"): -300.0}  # the gig paid in, the vet owed
+    readings = tuple((account, day, later.get((account, day), balance)) for account, day, balance in BOOK_READINGS)
+    path = books(tmp_path, rows, readings)
+    statement = statements.income_statement(october(path), path)
+    found, labels = amounts(statement), statement["lines"]["label"].tolist()
+    assert labels[labels.index("Salary and wages") + 1] == "Freelance"
+    assert (found["Freelance"], found["Pets"], priors(statement)["Freelance"]) == (400.0, 100.0, 0.0)
+    assert (found["Total income"], found["Total expenses"], found["Net income"]) == (3705.0, 1100.0, 2605.0)
+    totals = queries.income_and_spending(path).loc["2026-10"]
+    assert found["Salary and wages"] + found["Freelance"] == totals["income"] and found["Total expenses"] == totals["spending"]
+    assert amounts(statements.cash_flow(october(path), TODAY, path))["Not explained by the transactions"] == 0.0
+
+
 def test_expenses_run_largest_first_with_uncategorized_last(tmp_path):
     rows = OCTOBER_ROWS + [("odd", "amex", "2026-10-14", -900.0, "MYSTERY SHOP", "uncategorized", None),
                            ("refund", "amex", "2026-10-15", 40.0, "BOOK BARN REFUND", "shopping", None)]

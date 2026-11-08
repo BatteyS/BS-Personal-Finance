@@ -55,8 +55,8 @@ Whichever way you install it, until you set it up, the page runs on example acco
 The quickest start is to import an export from your bank: the first time, the page asks which account it's for and learns the file's layout (see **Other banks** below), and sets up your accounts as you go. For the rest, or to describe everything at once:
 
 1. **Your accounts.** Copy `accounts.example.toml` to `data/accounts.toml` and make it describe your own accounts: which Fidelity accounts you have (as the Account column of Fidelity's export names them), which count toward the 401(k), Roth IRA and HSA limits, how often you're paid, and which accounts you move money between. The file explains each field.
-2. **Your budget.** Run `uv run budget.py --interview`. It asks for your salary, contributions, tax settings and each monthly budget line, and writes `data/budget.toml`. Run it again any time; your answers are the defaults.
-3. **Your rules.** Rules sort transactions into categories (`COSTCO` → groceries). They live in `data/rules.csv`, created from `rules.example.csv` the first time, and you add more from the page as new merchants show up.
+2. **Your budget.** Run `uv run budget.py --interview`. It asks for your salary, contributions, tax settings and each monthly budget line, and writes `data/budget.toml`. Run it again any time; your answers are the defaults. Or change them on the page: the Budget and Assumptions & taxes tabs each have an Edit switch, and a save shows on every tab at once.
+3. **Your rules.** Rules sort transactions into categories (`COSTCO` → groceries). They live in `data/rules.csv`, created from `rules.example.csv` the first time, and you add more from the page as new merchants show up. When no category fits, add your own under **Categories** in the sidebar: a name, and whether it counts as spending or income. The rule form, the budget and the totals use it at once.
 
 ## On your phone
 
@@ -71,7 +71,7 @@ It may print a `login.tailscale.com` link to turn on HTTPS for your tailnet: ope
 Three things to know:
 
 - **The Mac has to be awake.** Keep it plugged in, and turn on **Prevent automatic sleeping on power adapter when the display is off** in System Settings, Battery, Options. After a restart, someone has to log in on the Mac first.
-- **The page stays running** while phone access is on, so the phone always finds it: a LaunchAgent starts it at login and again if it stops. Without phone access, it stops twenty minutes after its last tab closes.
+- **The page stays running** while phone access is on, so the phone always finds it: a LaunchAgent starts it at login and again if it stops. Without phone access, it stops twenty minutes after its last tab closes. If something else runs the page on another port, the address follows it: a running page points the address at itself whenever nothing answers where it points, within a minute of its first visitor.
 - **Only you can open it.** Tailscale's address only reaches devices on your own tailnet, and the page answers a request from the phone only for the Tailscale account phone access was set up for (`data/phone.json`, which never leaves the Mac).
 
 `uv run phone.py status` says whether it works and what to do if not. To turn it off, which stops the page from running all the time:
@@ -86,7 +86,7 @@ The page can run as one container on a home server too, reached only over Tailsc
 
 1. Copy `deploy/env.example` to `.env` beside `docker-compose.yml` and fill it in: a Tailscale auth key from your admin console, your Tailscale login, and where the data folder and Tailscale's state should live. The data folder must belong to user id 1000, which the page runs as.
 2. Run `docker compose up -d --build`. `docker compose logs tailscale` prints the node's address once it has joined.
-3. Open the address on any of your devices. The data folder starts empty: import your exports from the sidebar, and copy your `accounts.toml`, `budget.toml` and `rules.csv` into it from your laptop.
+3. Open the address on any of your devices. The data folder starts empty: import your exports from the sidebar, and copy your `accounts.toml`, `budget.toml`, `rules.csv` and `categories.toml` (if you've added categories) into it from your laptop.
 
 The sidebar's version and **Update** button don't appear in a container; to update, pull and run the same command. The data folder is never touched by an update, and it holds every export and `finance.db`, so back it up the way you would the laptop's.
 
@@ -116,12 +116,14 @@ An update never writes over a change of yours: a copy whose files you've edited 
    - Bank of America: your checking account
    - Amex: your card's activity
 2. **Import them** from the page's sidebar.
-3. **Read the verdict,** then clear **Uncategorized**: pick each new merchant, check the suggested pattern, choose a category, save. Every save re-sorts all your months.
+3. **Read the verdict,** then clear **Uncategorized**: pick each new merchant, check the suggested pattern, choose a category (or add one of your own under **Categories** in the sidebar), save. Every save re-sorts all your months.
 4. **Glance at Net worth.** Each Fidelity account should carry the positions file's date, and Bank of America its last posted day. A card or loan you've typed a balance for follows its transactions from there; type a fresh one if it has drifted.
 
 **Finance mode.** The **Personal | Finance** toggle at the top right reads the same data as statements, each beside the period before: a balance sheet as of a month, quarter or year end (assets, liabilities and net worth, each line opening to its accounts); an income statement for the period on a cash basis (take-home pay, employer money and dividends in, spending by category out, net of refunds); and a cash flow that reconciles the two. The cash flow's last line is zero when every transaction is categorized and every transfer matched, and otherwise the size of what's missing: an unmatched transfer, an export you haven't imported, a typed balance the transactions disagree with. The page remembers the mode in its address (`?mode=finance`), so a bookmark or the phone's home-screen icon reopens where you left it. Only complete periods are offered; **Year to date** is how the current year reads.
 
-**Net worth.** The second tab shows what every account held at the end of each month, as a line each beside net worth's gold line; a pill per line shows or hides it, and the axis fits the lines shown. It splits each month's change into what the market did and what you did. Balances come from Bank of America's export (its running balance), from the Fidelity positions download (every Fidelity account's value on one day), and from **Record a balance** on the tab for anything else: a card's statement balance, a loan, an HSA held elsewhere. A card or loan is recorded as what you owe. Cash, cards and loans are brought to each month end by their transactions, so one typed balance carries a card from then on; an investment account shows a real reading taken within a week of the month end, or its last reading with the date it was taken.
+**Net worth.** The second tab shows what every account held at the end of each month, as a line each beside net worth's gold line; a pill per line shows or hides it, and the axis fits the lines shown. It splits each month's change into what the market did and what you did. Balances come from Bank of America's export (its running balance), from the Fidelity positions download (every Fidelity account's value on one day), from another brokerage's OFX or QFX download when it lists positions (map its account once with **Teach this file**), and from **Record a balance** on the tab for anything else: a card's statement balance, a loan, an HSA held elsewhere. A card or loan is recorded as what you owe. Cash, cards and loans are brought to each month end by their transactions, so one typed balance carries a card from then on; an investment account shows a real reading taken within a week of the month end, or its last reading with the date it was taken.
+
+Under the accounts, **Holdings** opens each investment account to what it held on that reading's day: symbol, description, shares, price, value, cost basis and gain, largest first, with a total that is the account's balance above. Fidelity's download carries cost basis; OFX doesn't, so an OFX account's cost basis and gain are blank. A typed balance has no holdings.
 
 To fill in the months before your first balances, import activity history going back as far as you like (Fidelity's History for All accounts, and Bank of America's and Amex's activity), alongside a positions download or after it. Cash and cards are worked back exactly from their balances. An investment account's earlier months are estimated, as its first reading less the money put in since, as if the market stood still. They're labeled "est. from" that reading's date and shaded "Estimated" on the chart, and growth is never worked out from them. Each account goes back only as far as its bank's transactions do.
 
@@ -136,8 +138,9 @@ Moves between your own accounts (a card payment, cash to brokerage) are matched 
 | `finance.db` | Every transaction imported, with its category, and every balance recorded |
 | `exports/` | Every file you've imported, kept |
 | `accounts.toml` | Your accounts, the transfers between them, your pay schedule |
-| `budget.toml` | Your budget, written by the interview |
+| `budget.toml` | Your budget, written by the interview or the page's Edit switches |
 | `rules.csv` | Your category rules |
+| `categories.toml` | Categories of your own, added on the page |
 | `formats.toml` | The layouts of other banks' files, and which account an OFX file belongs to |
 | `phone.json` | Your Mac's tailnet address and Tailscale login, once phone access is on |
 

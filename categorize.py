@@ -28,7 +28,6 @@ import db
 from load import normalize
 
 RULES_EXAMPLE = Path(__file__).resolve().parent / "rules.example.csv"
-CATEGORIES = set(config.SPENDING_CATEGORIES) | set(config.OTHER_CATEGORIES)
 INVESTMENT_KINDS = {"brokerage", "retirement", "hsa"}
 # A transfer between two of these is a rollover, never a contribution.
 ROLLOVER_KINDS = {"retirement", "hsa"}
@@ -53,8 +52,9 @@ def read_rules(path: Path) -> list[dict]:
             where = f"{path.name} line {line}"
             if not pattern:
                 raise RulesError(f"{where}: the pattern is empty")
-            if category not in CATEGORIES:
-                raise RulesError(f"{where}: {category!r} isn't a category (the lists are in config.py)")
+            if category not in config.all_categories():
+                raise RulesError(f"{where}: {category!r} isn't a category (add it under Categories in the "
+                                 "sidebar, or use one listed there)")
             if match == "contains":
                 regex = re.compile(re.escape(normalize(pattern)))
             elif match == "regex":

@@ -10,7 +10,7 @@ Once a month, Fidelity, Bank of America and Amex CSV exports go in and one verdi
 - When a check needs real data, give the user the command to run in their own terminal, and ask for a scrubbed excerpt if something fails.
 - No real account numbers, balances, names or merchant totals in code, tests, fixtures, commit messages or docs.
 - New samples come from `uv run scrub.py`, which the user runs on the raw files.
-- Personal setup lives in the data folder, never in code: `accounts.toml` (accounts, transfer pairs, pay schedule), `budget.toml`, `rules.csv` and `formats.toml` (layouts taught on the page). The repo ships `*.example.*` versions with made-up values; tests use `tests/accounts.toml`.
+- Personal setup lives in the data folder, never in code: `accounts.toml` (accounts, transfer pairs, pay schedule), `budget.toml`, `rules.csv`, `formats.toml` (layouts taught on the page) and `categories.toml` (categories added on the page). The repo ships `*.example.*` versions with made-up values; tests use `tests/accounts.toml`.
 - Before anything is shared, `uv run export_public.py --check` must pass. CI runs it on every push.
 
 `.claude/settings.json` denies reads of these paths; the rules above cover what a deny list can't.

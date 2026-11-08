@@ -135,6 +135,30 @@ def test_safari_gets_the_app_icon_at_an_address_of_its_own(tmp_path, monkeypatch
     assert again.group(1) != first.group(1) and (tmp_path / "favicon.png").read_bytes() == b"a new icon"
 
 
+def test_safari_favorites_find_the_home_screen_icon_in_streamlits_page(tmp_path, monkeypatch):
+    """Safari's Favorites show a site's home-screen icon, which Safari finds only in the page's markup
+    or at /apple-touch-icon.png, never one a script adds; without one it drew the tab icon in a white
+    tile. So it goes beside favicon.png in Streamlit's folder, which serves it at the root, and the
+    page names it right after the tab icon, at the icon's hash, and only once however often it's
+    installed."""
+    import icon
+
+    (tmp_path / "favicon.png").write_bytes(b"streamlit's logo")
+    (tmp_path / "index.html").write_text(STREAMLIT_PAGE)
+    assert icon.install_favicon(tmp_path)
+    assert (tmp_path / "apple-touch-icon.png").read_bytes() == icon.draw(icon.TOUCH_SIZE, square=True)
+    assert (f'<link rel="shortcut icon" href="./favicon.png?v={icon.version()}" />'
+            f'<link rel="apple-touch-icon" href="./apple-touch-icon.png?v={icon.version()}" />'
+            ) in (tmp_path / "index.html").read_text()
+    assert not icon.install_favicon(tmp_path)  # already so: nothing written
+
+    monkeypatch.setattr(icon, "draw", lambda size, square=False: b"a new icon, %d px" % size)
+    assert icon.install_favicon(tmp_path)
+    page = (tmp_path / "index.html").read_text()
+    assert page.count('rel="apple-touch-icon"') == 1 and f"apple-touch-icon.png?v={icon.version()}" in page
+    assert (tmp_path / "apple-touch-icon.png").read_bytes() == b"a new icon, 180 px"
+
+
 def test_the_home_screen_icon_has_an_address_of_its_own_too(tmp_path, monkeypatch):
     """Safari can show the home-screen icon the page's script adds as the tab's icon, and keeps each
     address's picture for good: an unversioned apple-touch-icon.png kept Safari's tab on the old green
