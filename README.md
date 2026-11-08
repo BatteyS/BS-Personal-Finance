@@ -22,7 +22,7 @@ Open Terminal (in Applications, then Utilities), paste this line, and press Retu
 
 It installs what's missing, all of it into your own home folder: Apple's Command Line Tools (for git), [uv](https://docs.astral.sh/uv/) (which runs Python), your copy in `~/personal-finance` with its packages, and **Personal Finance** on your Desktop. It asks for no password itself (Apple's window for the Command Line Tools may), and when it finishes, the page is open in your browser. It needs macOS 13 (Ventura) or newer, and running it again is safe: what's done is skipped.
 
-From then on, double-click **Personal Finance** on your Desktop whenever you want the page. It opens in your browser with no Terminal window, and stops by itself twenty minutes after you close its last tab. It also answers the link `bs-personal-finance://launch`, which the **Launch** button on [seanbattey.com](https://seanbattey.com/apps/) uses. From a terminal, `sh launch.sh` does the same, and `sh launch.sh --stop` stops it.
+From then on, double-click **Personal Finance** on your Desktop whenever you want the page. It opens in your browser with no Terminal window, and stops by itself twenty minutes after you close its last tab. It also answers the link `bs-personal-finance://launch`, which the **Launch** button on [seanbattey.com](https://seanbattey.com/apps/) uses. One set up before v1.25 learns that link the next time you open it: macOS asks whether Personal Finance may use your Desktop folder, where it lives, and Allow lets it. From a terminal, `sh launch.sh` does the same, and `sh launch.sh --stop` stops it.
 
 ### On Windows
 

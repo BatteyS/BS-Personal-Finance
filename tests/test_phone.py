@@ -116,6 +116,19 @@ def test_the_icon_is_a_ring_on_a_rounded_square():
     assert icon.pixel(size * 0.79, size / 2, size)[:3] == icon.SLICE  # the light slice, at three
 
 
+def test_the_tab_and_home_screen_icons_have_no_clear_pixel():
+    """Safari puts white behind a tab icon's clear pixels, so the rounded square showed in a white
+    box there: the tab's and the home screen's icons are the square filled to the edge."""
+    import zlib
+
+    size = 64
+    assert icon.pixel(0.5, 0.5, size, square=True) == (*icon.BACKGROUND, 255)  # a corner, filled
+    data = icon.draw(size, square=True)
+    rows = zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8])
+    stride = 1 + size * 4  # a filter byte, then RGBA
+    assert {rows[row * stride + 1 + column * 4 + 3] for row in range(size) for column in range(size)} == {255}
+
+
 def test_the_iconset_has_every_size_macos_wants(tmp_path):
     icon.write_iconset(tmp_path / "icon.iconset")
     names = sorted(path.name for path in (tmp_path / "icon.iconset").iterdir())

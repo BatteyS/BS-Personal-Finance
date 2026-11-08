@@ -43,8 +43,11 @@ LIFT = "#000003"  # a step off the background: money taken back out of brokerage
 TAN = "#000004"  # spending, and the zero line
 SURFACE = "#000005"  # the background itself: the gaps between slices
 GRID = "#000006"  # gridlines, and the band behind estimated months
-# The spending ring's ramp: the largest slice the darkest yellow, the smallest the lightest off-white.
+# The spending ring's ramp: the largest slice the darkest yellow, then lighter by RAMP_STEP of its
+# ten steps for each slice down in size, so the fourth-largest is already pale, and from the sixth
+# on every slice is the same lightest off-white.
 RAMP = [f"#{step:06d}" for step in range(11, 21)]
+RAMP_STEP = 2
 KIND_LABELS = {"cash": "Cash", "brokerage": "Brokerage", "retirement": "Retirement", "hsa": "HSA",
                "credit": "Credit cards", "loan": "Loans"}
 CHART_CONFIG = {"displayModeBar": False}
@@ -84,14 +87,20 @@ SITE = "https://seanbattey.com"
 @st.cache_resource(show_spinner=False)
 def tab_icon() -> bytes:
     """The app's icon (icon.py) for the browser tab, drawn once while the page runs. Safari shows
-    only the favicon Streamlit's page names as it loads, so that gets the icon too
+    the favicon Streamlit's page names as it loads, so that gets the icon too
     (icon.install_favicon; launch.sh has usually done it already). A Streamlit that can't be
     written to keeps its own."""
     try:
         icon.install_favicon()
     except OSError:
         pass
-    return icon.draw(icon.FAVICON_SIZE)
+    return icon.draw(icon.FAVICON_SIZE, square=True)
+
+
+@st.cache_resource(show_spinner=False)
+def icon_version() -> str:
+    """The icon's hash (icon.version), for the home-screen icon's address below."""
+    return icon.version()
 
 
 st.set_page_config(page_title="Finance", page_icon=tab_icon(), layout="wide")
@@ -103,7 +112,9 @@ if reason:
     st.stop()
 st.logo(LOGO, size="large", link=SITE)  # the top-left corner, where the site's header has it
 # The home-screen icon and full-screen mode, for "Add to Home Screen" on a phone. Streamlit owns
-# the page's <head>, so a zero-height component adds the tags to it. It also makes the monogram
+# the page's <head>, so a zero-height component adds the tags to it. The icon's address carries its
+# hash, as the tab's does: Safari can show this icon in a tab, and keeps each address's picture for
+# good, so an unversioned one kept the tab on the old green ring. It also makes the monogram
 # open the site in this tab, in place of the page: Streamlit's logo link opens a new one. The link
 # keeps Streamlit's rel="noreferrer", so the site still never learns the page's address. Each run
 # swaps in its own click handler, so one stays however often this frame is drawn again.
@@ -116,7 +127,7 @@ page.logoInThisTab = (event) => {
 };
 page.addEventListener("click", page.logoInThisTab, true);
 for (const [tag, attrs] of [
-    ["link", {rel: "apple-touch-icon", href: "./app/static/apple-touch-icon.png"}],
+    ["link", {rel: "apple-touch-icon", href: "./app/static/apple-touch-icon.png?v=%(icon)s"}],
     ["meta", {name: "apple-mobile-web-app-capable", content: "yes"}],
     ["meta", {name: "mobile-web-app-capable", content: "yes"}],
     ["meta", {name: "apple-mobile-web-app-title", content: "Finance"}],
@@ -127,7 +138,7 @@ for (const [tag, attrs] of [
   for (const [name, value] of Object.entries(attrs)) element.setAttribute(name, value);
   page.head.appendChild(element);
 }
-</script>""" % {"site": json.dumps(SITE)}, height=0)
+</script>""" % {"site": json.dumps(SITE), "icon": icon_version()}, height=0)
 # Streamlit leaves a tall empty band above the page; a laptop screen needs that room for the data.
 # Its button rows scroll sideways when full, hiding the last categories; wrap them instead.
 # Finance mode's statements right-align their figures, as statements do; a static table writes its
@@ -438,11 +449,11 @@ def slice_order(categories: list[str]) -> list[str]:
 
 def ramp_colors(categories: list[str], amounts) -> list[str]:
     """Each category's color by its size, in `categories` order: the largest takes the ramp's first
-    step (darkest yellow), the smallest its last (lightest off-white), the rest spread between."""
+    step (darkest yellow), each smaller one RAMP_STEP steps lighter, and the smallest few share the
+    last step (lightest off-white)."""
     by_size = sorted(categories, key=lambda name: -amounts[name])
     rank = {name: place for place, name in enumerate(by_size)}
-    last = max(len(by_size) - 1, 1)
-    return [RAMP[round(rank[name] * (len(RAMP) - 1) / last)] for name in categories]
+    return [RAMP[min(rank[name] * RAMP_STEP, len(RAMP) - 1)] for name in categories]
 
 
 def spending_pie(spending, categories: list[str]) -> go.Figure:

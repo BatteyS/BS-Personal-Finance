@@ -106,6 +106,27 @@ update_copy() {
   "$UV" run --quiet updates.py update >>"$LOG" 2>&1 || :
 }
 
+# Personal Finance on the Desktop answers the link bs-personal-finance://launch, the Launch button
+# on seanbattey.com, only when install.sh v1.25 or later made it, and an update never makes the app
+# anew. Opened by an app without the link (the applet up this launcher's line of parents; from a
+# terminal there is none), give it the link with install.sh --link, in the background once the app
+# has quit, so the app isn't changed while it runs.
+link_app() {
+  applet_pid=$$
+  while [ "${applet_pid:-1}" -gt 1 ]; do
+    exe=$(ps -o comm= -p "$applet_pid" 2>/dev/null)
+    case $exe in */Contents/MacOS/applet) break ;; esac
+    applet_pid=$(ps -o ppid= -p "$applet_pid" 2>/dev/null | tr -d ' ')
+  done
+  [ "${applet_pid:-1}" -gt 1 ] || return 0
+  applet=${exe%/Contents/MacOS/applet}
+  [ "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$applet/Contents/Info.plist" 2>/dev/null)" = bs-personal-finance ] &&
+    return 0
+  date "+--- %Y-%m-%d %H:%M:%S giving $applet the link, once it has quit" >>"$LOG"
+  nohup /bin/sh -c 'while kill -0 "$1" 2>/dev/null; do sleep 1; done; exec /bin/sh "$2" --link "$3"' \
+    link_app "$applet_pid" "$ROOT/install.sh" "$applet" >>"$LOG" 2>&1 </dev/null &
+}
+
 # --serve-always PORT: what phone access's LaunchAgent runs. Becomes the page, in this same
 # process, so launchd can see it stop and start it again; no idle stop.
 if [ "${1:-}" = --serve-always ]; then
@@ -122,6 +143,9 @@ fi
 # had no connections for IDLE_MINUTES, it stops it.
 if [ "${1:-}" = --serve ]; then
   port=$2
+  # Here rather than before the update, so the first open after an update that brought link_app
+  # runs it: the launcher that started this page is the old code, this is the new.
+  link_app
   draw_icon
   tab_icon
   "$UV" run streamlit run dashboard.py --server.port "$port" --server.address localhost \
@@ -184,6 +208,7 @@ All of it is in $LOG"
 }
 
 if port=$(our_port); then
+  link_app   # a page that's starting runs it in --serve
   open_page "$port"
   exit 0
 fi

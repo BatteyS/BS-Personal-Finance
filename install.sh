@@ -30,6 +30,8 @@
 #                  that copy is used.
 #   --no-open      don't open the page at the end
 #   --phone        set up Personal Finance on your phone, without asking first
+#   --link APP     only give APP, a Personal Finance made before v1.25, the link above;
+#                  Personal Finance does it itself when opened (launch.sh)
 #
 # Only macOS for now. On Linux, follow Get started in README.md.
 
@@ -66,14 +68,16 @@ wait_for_return() {
 DIR=
 OPEN=1
 PHONE=
+LINK=
 UPDATED=
 while [ $# -gt 0 ]; do
   case $1 in
     --dir) [ $# -ge 2 ] || die "--dir needs a folder after it."; DIR=$2; shift ;;
     --no-open) OPEN= ;;
     --phone) PHONE=yes ;;
-    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "$1 isn't an option. The options are --dir FOLDER, --no-open and --phone." ;;
+    --link) [ $# -ge 2 ] || die "--link needs the app after it."; LINK=$2; shift ;;
+    -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "$1 isn't an option. The options are --dir FOLDER, --no-open, --phone and --link APP." ;;
   esac
   shift
 done
@@ -226,6 +230,41 @@ ours() {
   [ -d "$1" ] && [ "$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null)" = "$APP_ID" ]
 }
 
+# Whether the app $1 answers the link bs-personal-finance://launch: its Info.plist declares the
+# scheme. An app made before v1.25 doesn't, and updating the copy never makes the app anew.
+has_link() {
+  [ "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$1/Contents/Info.plist" 2>/dev/null)" = "$URL_SCHEME" ]
+}
+
+# Declare the scheme in the app $1's Info.plist (main.applescript handles the link). Editing the
+# bundle breaks its signature, so it is sealed again, or Apple silicon may refuse to open it.
+# codesign won't seal a bundle with Finder's info on it, which an app that has sat on the Desktop
+# has, so that goes first. If it can't be sealed, Info.plist goes back as it was, which the old
+# seal still matches: the app opens as before, just without the link.
+add_link() {
+  plist="$1/Contents/Info.plist"
+  before=$(mktemp "${TMPDIR:-/tmp}/personal-finance-plist.XXXXXX") || return 1
+  cp "$plist" "$before" || { rm -f "$before"; return 1; }
+  if quiet plutil -insert CFBundleURLTypes -json "[{\"CFBundleURLName\":\"$APP_ID\",\"CFBundleURLSchemes\":[\"$URL_SCHEME\"]}]" "$plist"; then
+    xattr -rd com.apple.FinderInfo "$1" 2>/dev/null
+    xattr -rd com.apple.ResourceFork "$1" 2>/dev/null
+    if quiet codesign --force --sign - "$1"; then
+      rm -f "$before"
+      return 0
+    fi
+    cp "$before" "$plist"
+  fi
+  rm -f "$before"
+  return 1
+}
+
+# Tell LaunchServices about the app $1 now, so the link works before anything has opened it. On a
+# macOS without lsregister, the first open registers it.
+register_app() {
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  if [ -x "$lsregister" ]; then quiet "$lsregister" -f "$1"; fi
+}
+
 make_app() {
   dest=$1
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/personal-finance-app.XXXXXX") || return 1
@@ -275,16 +314,10 @@ fi
 exec /bin/sh "\$FOLDER/launch.sh"
 EOF
   quiet plutil -replace CFBundleIdentifier -string "$APP_ID" "$app/Contents/Info.plist" || return 1
-  # The link bs-personal-finance://launch opens this app (main.applescript handles it).
-  quiet plutil -insert CFBundleURLTypes -json "[{\"CFBundleURLName\":\"$APP_ID\",\"CFBundleURLSchemes\":[\"$URL_SCHEME\"]}]" "$app/Contents/Info.plist" || return 1
-  # Editing the bundle broke osacompile's signature. Seal it again, or Apple silicon may refuse
-  # to open it.
-  quiet codesign --force --sign - "$app" || return 1
+  # The link bs-personal-finance://launch opens this app; adding it seals the edited app again.
+  add_link "$app" || return 1
   rm -rf "$dest" && mv "$app" "$dest" || return 1
-  # Tell LaunchServices about it now, so the link works before anything has opened the app. On
-  # a macOS without lsregister, the first open registers it.
-  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-  if [ -x "$lsregister" ]; then quiet "$lsregister" -f "$dest"; fi
+  register_app "$dest"
   rm -rf "$tmp"
 }
 
@@ -314,6 +347,18 @@ ensure_phone() {
 }
 
 # --------------------------------------------------------------------- run
+
+# --link APP: what launch.sh runs, once the app has quit, when an app made before the link existed
+# opens the page. That app gets the link and nothing else changes: not the copy, not the page.
+if [ -n "$LINK" ]; then
+  ours "$LINK" || die "$LINK isn't a Personal Finance this installer made, or macOS didn't let it be read, so it was left as it is."
+  if ! has_link "$LINK"; then
+    add_link "$LINK" || { show_log_tail; die "Couldn't give $LINK the link: see above."; }
+  fi
+  register_app "$LINK"
+  ok "$LINK answers $URL_SCHEME://launch"
+  exit 0
+fi
 
 step "Personal Finance"
 preflight

@@ -2,7 +2,8 @@
 and PowerShell 7, says how it's used and stops on anything but Windows, and, with PowerShell's
 own commands stood in for, registers bs-personal-finance under HKCU and makes the shortcut;
 launch.pyw starts, finds and stops a page (with a stand-in for uv), waits for one still starting,
-and stops one left idle; the page restarts under it; icon.py writes a Windows icon. The ones that
+stops one left idle, and removes its record even while another process has it open, which
+Windows won't delete; the page restarts under it; icon.py writes a Windows icon. The ones that
 run install.ps1 need PowerShell 7 (pwsh), which GitHub's runners have. CI's windows job runs the
 install itself on Windows, and these tests there too, so text files are read as UTF-8 by name:
 Windows's Python reads them in the PC's code page otherwise."""
@@ -367,6 +368,71 @@ def test_the_watcher_ends_with_its_page_and_leaves_a_newer_pages_record(launcher
     launcher.serve(8501, "uv", {})
     assert page.minutes == 3 and not page.stopped
     assert launcher.recorded() == (5151, 8501)
+
+
+def held_open(launcher, monkeypatch, times: int, then_removed: bool = False) -> list:
+    """The record as Windows treats a file another process has open: deleting it fails with a
+    sharing violation (WinError 32) the first `times` tries. With `then_removed`, the process
+    holding it removes it once it lets go, as a watcher does its own page's. Returns the tries."""
+    unlink = Path.unlink
+    tries = []
+
+    def held(path, missing_ok=False):
+        if path == launcher.PIDFILE:
+            tries.append(path)
+            if len(tries) <= times:
+                if then_removed and len(tries) == times:
+                    unlink(path)
+                raise PermissionError(13, "The process cannot access the file because it is being used by "
+                                          "another process", str(path), 32)
+        return unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held)
+    return tries
+
+
+@pytest.mark.parametrize("then_removed", [False, True], ids=["--stop removes it", "the watcher removes it"])
+def test_stop_waits_out_the_watcher_reading_the_record(launcher, monkeypatch, capsys, then_removed):
+    """--stop ends the page; its watcher reads the record as the page ends, and on Windows --stop's
+    own removal of it fails while it does (a v1.30 CI run failed so). --stop waits that out, still
+    says it stopped the page, exits 0, and leaves no record, whichever side removes it."""
+    launcher.record(4242, 8501)
+    tries = held_open(launcher, monkeypatch, 1, then_removed)
+    monkeypatch.setattr(launcher, "alive", lambda pid: True)
+    stopped = []
+    monkeypatch.setattr(launcher, "stop", stopped.append)
+    assert launcher.main(["--stop"]) == 0
+    printed = capsys.readouterr()
+    assert printed.out == "Stopped the page on port 8501.\n" and printed.err == ""
+    assert stopped == [4242] and len(tries) == 2
+    assert not launcher.PIDFILE.exists()
+
+
+def test_the_watcher_waits_out_a_launcher_reading_the_record(launcher, monkeypatch):
+    """The other way round: the page ends just as a click's launcher reads the record. The watcher
+    has no console, so a failure would be a message box; it waits that out and removes the record."""
+    page = Page(runs=2)
+    monkeypatch.setattr(launcher, "spawn", lambda arguments, env, flags=0: page)
+    monkeypatch.setattr(launcher, "draw_icon", lambda uv, env: None)
+    monkeypatch.setattr(launcher, "connections", lambda port: 1)
+    tries = held_open(launcher, monkeypatch, 1)
+    launcher.serve(8501, "uv", {})
+    assert len(tries) == 2 and not launcher.PIDFILE.exists()
+
+
+def test_a_record_held_for_good_is_left_and_the_log_says_so(launcher, monkeypatch, capsys):
+    """Held past a couple of seconds, it's not a read: the record is left (a stale one is harmless:
+    the next start finds its page gone) rather than failing --stop."""
+    launcher.record(4242, 8501)
+    held_open(launcher, monkeypatch, 1000)
+    slept = []
+    monkeypatch.setattr(launcher.time, "sleep", slept.append)
+    monkeypatch.setattr(launcher, "alive", lambda pid: False)
+    assert launcher.main(["--stop"]) == 0
+    assert capsys.readouterr().out == "This copy's page isn't running.\n"
+    assert 1 <= sum(slept) <= 3
+    assert launcher.PIDFILE.exists()
+    assert "stayed in use by another process, so it was left" in launcher.LOG.read_text(encoding="utf-8")
 
 
 def test_the_launcher_says_what_to_do_without_uv(launcher, monkeypatch, capsys):

@@ -49,6 +49,9 @@ def this_month_page(tmp_path, monkeypatch):
         ("dining", "bofa_checking", "2026-10-04", -300.0, "CORNER CAFE", "dining", None),
         ("travel", "bofa_checking", "2026-10-05", -100.0, "METRA", "travel", None),
         ("gas", "bofa_checking", "2026-10-06", -50.0, "SHELL", "gas", None),
+        ("shopping", "bofa_checking", "2026-10-07", -30.0, "TARGET", "shopping", None),
+        ("health", "bofa_checking", "2026-10-08", -20.0, "WALGREENS", "health", None),
+        ("hobbies", "bofa_checking", "2026-10-09", -10.0, "REI", "hobbies", None),
         ("pay", "bofa_checking", "2026-10-15", 3000.0, "ACME CORP PAYROLL", "income", None),
         ("in_cash", "bofa_checking", "2026-09-10", -1000.0, "FID BKG SVC", "transfer", "in_broker"),
         ("in_broker", "fidelity_brokerage", "2026-09-10", 1000.0, "TRANSFER RECEIVED", "transfer", "in_cash"),
@@ -86,11 +89,13 @@ def numbers(array) -> list[float]:
     return list(array)
 
 
-def test_the_ring_runs_from_darkest_yellow_for_the_largest_to_lightest_off_white(tmp_path, monkeypatch):
+def test_the_ring_fades_fast_from_darkest_yellow_and_the_smallest_share_off_white(tmp_path, monkeypatch):
     pie = this_month_page(tmp_path, monkeypatch)["pie"]["data"][0]
     colors = dict(zip(pie["labels"], pie["marker"]["colors"]))
-    # The ramp's ten steps are #000011 (darkest yellow) to #000020 (lightest off-white).
-    assert colors == {"Groceries": "#000011", "Dining": "#000014", "Travel": "#000017", "Gas": "#000020"}
+    # The ramp's ten steps are #000011 (darkest yellow) to #000020 (lightest off-white); each slice
+    # down in size is two steps lighter, and from the sixth on they share the last.
+    assert colors == {"Groceries": "#000011", "Dining": "#000013", "Travel": "#000015", "Gas": "#000017",
+                      "Shopping": "#000019", "Health": "#000020", "Hobbies": "#000020"}
     assert pie["marker"]["line"] == {"color": "#000005", "width": 2}  # a gap of background between slices
 
 
@@ -118,16 +123,43 @@ def test_safari_gets_the_app_icon_at_an_address_of_its_own(tmp_path, monkeypatch
     (tmp_path / "favicon.png").write_bytes(b"streamlit's logo")
     (tmp_path / "index.html").write_text(STREAMLIT_PAGE)
     assert icon.install_favicon(tmp_path)
-    assert (tmp_path / "favicon.png").read_bytes() == icon.draw(icon.FAVICON_SIZE)
+    assert (tmp_path / "favicon.png").read_bytes() == icon.draw(icon.FAVICON_SIZE, square=True)
     page = (tmp_path / "index.html").read_text()
     first = re.search(r'<link rel="shortcut icon" href="\./favicon\.png\?v=([0-9a-f]{12})" />', page)
     assert first and page.count("favicon") == 1
     assert not icon.install_favicon(tmp_path)  # already so: nothing written
 
-    monkeypatch.setattr(icon, "draw", lambda size: b"a new icon")
+    monkeypatch.setattr(icon, "draw", lambda size, square=False: b"a new icon")
     assert icon.install_favicon(tmp_path)
     again = re.search(r'favicon\.png\?v=([0-9a-f]{12})"', (tmp_path / "index.html").read_text())
     assert again.group(1) != first.group(1) and (tmp_path / "favicon.png").read_bytes() == b"a new icon"
+
+
+def test_the_home_screen_icon_has_an_address_of_its_own_too(tmp_path, monkeypatch):
+    """Safari can show the home-screen icon the page's script adds as the tab's icon, and keeps each
+    address's picture for good: an unversioned apple-touch-icon.png kept Safari's tab on the old green
+    ring after the icon turned gold. So its address carries the icon's hash, as the tab icon's does."""
+    import streamlit
+    import streamlit.components.v1 as components
+    from streamlit.testing.v1 import AppTest
+
+    import icon
+    import phone
+
+    monkeypatch.setattr(phone, "PHONE", tmp_path / "phone.json")  # no phone access set up
+    added = []
+
+    def html(source, **options):
+        added.append(source)
+        streamlit.stop()  # the rest of the page isn't this test's
+
+    monkeypatch.setattr(components, "html", html)
+    page = AppTest.from_file(str(ROOT / "dashboard.py"), default_timeout=60).run()
+    assert not page.exception
+    [script] = added
+    assert re.fullmatch(r"[0-9a-f]{12}", icon.version())
+    assert f'href: "./app/static/apple-touch-icon.png?v={icon.version()}"' in script
+    assert "apple-touch-icon.png\"" not in script  # no address without the hash
 
 
 def test_the_installed_streamlit_is_where_the_icon_goes():

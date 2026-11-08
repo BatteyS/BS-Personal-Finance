@@ -181,6 +181,20 @@ def record(pid: int, port: int) -> None:
     PIDFILE.write_text(f"{pid} {port}\n")
 
 
+def forget() -> None:
+    """Remove the record. Windows won't delete a file another process has open, and the watcher
+    reads the record as its page ends, just when --stop removes it: so a sharing violation, which
+    lasts as long as a read, is waited out. A record still held after two seconds is left to
+    whoever holds it (a watcher removes its own page's), and the log says so."""
+    for _ in range(40):
+        try:
+            PIDFILE.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    log(f"{PIDFILE} stayed in use by another process, so it was left")
+
+
 def starting() -> bool:
     """Whether the record is from moments ago: a page another click started, still getting ready."""
     try:
@@ -324,7 +338,7 @@ def serve(port: int, uv: str, env: dict[str, str]) -> None:
             break
     # Remove the record only while it's still this page's: a page started since keeps its own.
     if (recorded() or (None, None))[0] == page.pid:
-        PIDFILE.unlink(missing_ok=True)
+        forget()
 
 
 def wait_for(port: int) -> None:
@@ -369,7 +383,7 @@ def stop_page() -> None:
         print(f"Stopped the page on port {found[1]}.")
     else:
         print("This copy's page isn't running.")
-    PIDFILE.unlink(missing_ok=True)
+    forget()
 
 
 def launch(argv: list[str]) -> int:
@@ -404,7 +418,7 @@ def launch(argv: list[str]) -> int:
             wait_for(port)
             open_page(port)
             return 0
-    PIDFILE.unlink(missing_ok=True)
+    forget()
     update_copy(uv, env)
     for port in range(FIRST_PORT, LAST_PORT + 1):
         if not listening(port):
