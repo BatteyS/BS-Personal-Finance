@@ -6,6 +6,7 @@ out what queries.py returns; every change goes through actions.py. See docs/spec
     uv run streamlit run dashboard.py
 """
 
+import html
 import json
 import os
 import signal
@@ -134,14 +135,22 @@ st.logo(LOGO, size="large", link=SITE)  # the top-left corner, where the site's 
 # hash, as the tab's does: Safari can show this icon in a tab, and keeps each address's picture for
 # good, so an unversioned one kept the tab on the old green ring. It also makes the monogram
 # open the site in this tab, in place of the page: Streamlit's logo link opens a new one. The link
-# keeps Streamlit's rel="noreferrer", so the site still never learns the page's address. Each run
-# swaps in its own click handler, so one stays however often this frame is drawn again.
+# keeps Streamlit's rel="noreferrer", so the site's server never learns the page's address. On a
+# phone (the page reached over Tailscale, at a .ts.net address) the link also carries that address
+# after "#phone=personal-finance@", which a browser never sends to a server: seanbattey.com keeps it
+# in the phone's own storage, and its Launch button opens this page from then on. Each run swaps in
+# its own click handler, so one stays however often this frame is drawn again.
 components.html("""<script>
 const page = window.parent.document;
 page.removeEventListener("click", page.logoInThisTab, true);
 page.logoInThisTab = (event) => {
   const link = event.target.closest && event.target.closest('a[href^=%(site)s]');
-  if (link) link.target = "_self";
+  if (!link) return;
+  link.target = "_self";
+  const here = window.parent.location;
+  if (here.protocol === "https:" && here.hostname.endsWith(".ts.net")) {
+    link.href = %(site)s + "/#phone=personal-finance@" + encodeURIComponent(here.origin + "/");
+  }
 };
 page.addEventListener("click", page.logoInThisTab, true);
 for (const [tag, attrs] of [
@@ -163,7 +172,13 @@ for (const [tag, attrs] of [
 # own left alignment on every cell, so the rule has to come from outside it.
 # Then what the theme can't say: headings as the site's gold monospace section labels, dark ink on
 # gold buttons, and the charts' text in the page's ink instead of Streamlit's own blue-grays.
+# The version (version_line) is lifted out of the sidebar's flow into its header row, between the
+# monogram and the collapse button, level with the monogram, in the headings' monospace.
 st.markdown(("<style>[data-testid='stMainBlockContainer'] {padding-top: 2.5rem; padding-bottom: 2rem;}"
+             " [data-testid='stSidebarUserContent'] [data-testid='stElementContainer']:has(.pf-version)"
+             " {position: absolute; top: 0; left: 2.75rem; right: 3.5rem; width: auto !important; height: 3.75rem;}"
+             " .pf-version {color: %(muted)s; font: 0.75rem/3.75rem ui-monospace, 'SF Mono', Menlo, Consolas, monospace;"
+             " white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}"
              " [data-testid='stButtonGroup'] > div {flex-wrap: wrap;}"
              " [class*='st-key-statement-'] td:not(:first-child), [class*='st-key-statement-'] th:not(:first-child)"
              " {text-align: right !important;}"
@@ -288,22 +303,46 @@ def newer_version() -> dict | None:
     return updates.check()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def this_version() -> dict:
+    """Which version this copy is (updates.describe), read from git at most once a minute rather
+    than on every click."""
+    return updates.describe()
+
+
+def version_line() -> None:
+    """This copy's version (updates.describe) to the right of the sidebar's monogram, so whoever
+    opens the sidebar can tell at a glance which copy it is: "v1.40", or in the private repository
+    "#42 · d037abf". Streamlit has no place for text there, so it is the sidebar's first element,
+    lifted beside the monogram by the page's style (.pf-version). Hovering names the app, the
+    commit and the day it was made."""
+    shown = this_version()
+    if not shown["version"]:
+        return
+    about = "Personal Finance"
+    if shown["commit"]:
+        day = date.fromisoformat(shown["date"])
+        about += f", commit {shown['commit']} of {day:%b} {day.day}, {day.year}" + (
+            ", with files edited since" if shown["edited"] else "")
+    st.sidebar.markdown(f'<div class="pf-version" title="{html.escape(about)}">{html.escape(shown["version"])}</div>',
+                        unsafe_allow_html=True)
+
+
 def update_panel() -> None:
-    """The sidebar's foot: this copy's version, and an Update button when a newer one is out. An
-    update restarts the page, so it runs the new code."""
-    current = updates.version()
+    """The sidebar's foot: an Update button when a newer version is out. An update restarts the
+    page, so it runs the new code."""
     found = newer_version()
     if found and found["behind"]:
+        current = this_version()["version"]
         st.info(f"{found['latest'] or 'A newer version'} is out; this copy is {current or 'older'}.")
         if st.button("Update"):
             changed, message = updates.update()
             newer_version.clear()
+            this_version.clear()
             if changed:
                 restarted(message.split(". Restart")[0] + ".")
             else:
                 st.warning(message)
-    if current:
-        st.caption(f"Personal Finance {current}")
 
 
 # ---------------------------------------------------------------- restarting the page
@@ -1306,6 +1345,7 @@ def finance_page() -> None:
 def page() -> None:
     """The sidebar, any file waiting to be taught, the mode toggle, then Personal mode's five tabs
     or Finance mode's statements."""
+    version_line()
     import_panel()
     teach_panel()
     if mode_toggle() == "Finance":

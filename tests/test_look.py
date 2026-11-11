@@ -224,3 +224,32 @@ def test_a_click_on_the_monogram_opens_seanbattey_com(tmp_path, monkeypatch):
     page = AppTest.from_file(str(ROOT / "dashboard.py"), default_timeout=60).run()
     assert not page.exception
     assert [options.get("link") for options in logos] == ["https://seanbattey.com"]
+
+
+def test_on_a_phone_the_monogram_tells_the_sites_launch_button_where_this_page_is(tmp_path, monkeypatch):
+    """seanbattey.com's Launch opens an app's phone address once the phone has it, and the site
+    never names anyone's address. So the monogram, on a page reached over Tailscale, carries this
+    page's address after "#phone=personal-finance@", which a browser never sends to a server, and
+    keeps Streamlit's rel="noreferrer". On the Mac it links home as before."""
+    import streamlit
+    import streamlit.components.v1 as components
+    from streamlit.testing.v1 import AppTest
+
+    import phone
+
+    monkeypatch.setattr(phone, "PHONE", tmp_path / "phone.json")  # no phone access set up
+    added = []
+
+    def html(source, **options):
+        added.append(source)
+        streamlit.stop()  # the rest of the page isn't this test's
+
+    monkeypatch.setattr(components, "html", html)
+    page = AppTest.from_file(str(ROOT / "dashboard.py"), default_timeout=60).run()
+    assert not page.exception
+    [script] = added
+    handler = script[script.index("page.logoInThisTab = "):script.index("page.addEventListener")]
+    assert 'link.target = "_self"' in handler
+    assert 'here.protocol === "https:" && here.hostname.endsWith(".ts.net")' in handler
+    assert '"https://seanbattey.com" + "/#phone=personal-finance@" + encodeURIComponent(here.origin + "/")' in handler
+    assert "rel" not in handler  # Streamlit's rel="noreferrer" stays

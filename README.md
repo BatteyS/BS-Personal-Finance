@@ -88,13 +88,13 @@ The page can run as one container on a home server too, reached only over Tailsc
 2. Run `docker compose up -d --build`. `docker compose logs tailscale` prints the node's address once it has joined.
 3. Open the address on any of your devices. The data folder starts empty: import your exports from the sidebar, and copy your `accounts.toml`, `budget.toml`, `rules.csv` and `categories.toml` (if you've added categories) into it from your laptop.
 
-The sidebar's version and **Update** button don't appear in a container; to update, pull and run the same command. The data folder is never touched by an update, and it holds every export and `finance.db`, so back it up the way you would the laptop's.
+The sidebar's **Update** button doesn't appear in a container; to update, pull and run the same command. The data folder is never touched by an update, and it holds every export and `finance.db`, so back it up the way you would the laptop's.
 
 ## Updating
 
 **Personal Finance** on the Desktop brings your copy up to date each time it starts the page, so you normally run the newest version without doing anything. An update is a fast-forward of your copy to the newest release: it never writes over a change of yours, and skips quietly when you're offline. Versions are numbered after the change they were published for, v1.20 and so on, and each is a release at [github.com/BatteyS/BS-Personal-Finance/releases](https://github.com/BatteyS/BS-Personal-Finance/releases).
 
-For a page already running, the sidebar says which version you have, and when a newer one is out, shows an **Update** button. The page then restarts itself on the new version and comes back in a few seconds (if you started it by hand with `streamlit run`, it says to restart it there). If a page that was running during an update ever reaches for something only the new version has, it says so and offers a **Restart** button. Running the installer again does the same, from Terminal:
+The sidebar names your version to the right of the SB monogram: "v1.40", with "+3" when your copy has three commits of its own since, and "edited" when you've changed its files. When a newer one is out, the sidebar shows an **Update** button. The page then restarts itself on the new version and comes back in a few seconds (if you started it by hand with `streamlit run`, it says to restart it there). If a page that was running during an update ever reaches for something only the new version has, it says so and offers a **Restart** button. Running the installer again does the same, from Terminal:
 
 ```bash
 cd ~/personal-finance && sh install.sh
